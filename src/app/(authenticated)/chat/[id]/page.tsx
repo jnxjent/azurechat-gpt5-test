@@ -1,6 +1,7 @@
 // src/app/(authenticated)/chat/[id]/page.tsx
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
 import "@/lib/no-store-fetch";
 import { ChatPage } from "@/features/chat-page/chat-page";
 import { FindAllChatDocuments } from "@/features/chat-page/chat-services/chat-document-service";
@@ -35,14 +36,19 @@ function isAdminEmail(email: string | null | undefined): boolean {
 export default async function Home(props: HomeParams) {
   const { id } = props.params;
 
-  const [chatResponse, chatThreadResponse, docsResponse, extensionResponse, session] =
-    await Promise.all([
-      FindAllChatMessagesForCurrentUser(id),
-      FindChatThreadForCurrentUser(id),
-      FindAllChatDocuments(id),
-      FindAllExtensionForCurrentUser(),
-      getServerSession(authOptions),
-    ]);
+  const [
+    chatResponse,
+    chatThreadResponse,
+    docsResponse,
+    extensionResponse,
+    session,
+  ] = await Promise.all([
+    FindAllChatMessagesForCurrentUser(id),
+    FindChatThreadForCurrentUser(id),
+    FindAllChatDocuments(id),
+    FindAllExtensionForCurrentUser(),
+    getServerSession(authOptions),
+  ]);
 
   if (docsResponse.status !== "OK") {
     return <DisplayError errors={docsResponse.errors} />;
@@ -57,9 +63,19 @@ export default async function Home(props: HomeParams) {
     return <DisplayError errors={chatThreadResponse.errors} />;
   }
 
-  // SL_ADMIN_EMAILS に含まれるユーザーのみ isAdmin=true
   const userEmail = session?.user?.email;
+  const adminsRaw = process.env.SL_ADMIN_EMAILS ?? "";
+  const admins = adminsRaw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
   const isAdmin = isAdminEmail(userEmail);
+
+  console.log("[ADMIN] session.user.email =", userEmail ?? "(null)");
+  console.log("[ADMIN] session.user =", JSON.stringify(session?.user ?? null));
+  console.log("[ADMIN] SL_ADMIN_EMAILS =", adminsRaw || "(empty)");
+  console.log("[ADMIN] parsed admins =", JSON.stringify(admins));
+  console.log("[ADMIN] isAdmin =", isAdmin);
 
   return (
     <ChatPage
