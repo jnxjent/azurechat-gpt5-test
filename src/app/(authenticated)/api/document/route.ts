@@ -1,13 +1,28 @@
 // app/api/document/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getToken } from "next-auth/jwt";
+import { decideDept, getUserEmailFromJwtToken } from "@/lib/sl-dept";
 import { SearchAzureAISimilarDocuments } from "@/features/chat-page/chat-services/chat-api/chat-api-rag-extension";
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    // 実処理（RAG 検索）
-    const results = await SearchAzureAISimilarDocuments(req);
+    const token = await getToken({ req });
+    let email = token ? getUserEmailFromJwtToken(token) : null;
 
-    // 返り値が string（JSON文字列）でも Response でも 素のオブジェクトでも吸収
+    if (!email && process.env.SL_LOCAL_EMAIL) {
+      email = process.env.SL_LOCAL_EMAIL;
+    }
+
+    const deptLower = decideDept({
+      requestedDept: undefined,
+      userEmail: email,
+    });
+
+    console.log("[DOC] email =", email);
+    console.log("[DOC] deptLower =", deptLower);
+
+    const results = await SearchAzureAISimilarDocuments(req, deptLower);
+
     let data: any;
     if (results instanceof Response) {
       const ct = results.headers.get("content-type") || "";
@@ -19,18 +34,24 @@ export async function POST(req: Request) {
       data = results;
     }
 
-    // ✅ 必ず application/json で返す
     return NextResponse.json(data, {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
   } catch (err: any) {
     return NextResponse.json(
       { error: true, message: err?.message ?? "Internal error" },
-      { status: 500, headers: { "Content-Type": "application/json; charset=utf-8" } }
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      }
     );
   }
 }
 
 function safeParse(t: string) {
-  try { return JSON.parse(t); } catch { return { raw: t }; }
+  try {
+    return JSON.parse(t);
+  } catch {
+    return { raw: t };
+  }
 }

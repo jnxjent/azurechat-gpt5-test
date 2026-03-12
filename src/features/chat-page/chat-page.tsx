@@ -38,12 +38,19 @@ function toUiRole(role: ChatMessageModel["role"]): ChatUiRole {
   if (role === "function") {
     return "assistant";
   }
-  // ChatMessageModel["role"] には "user" | "system" | "assistant" | "tool" も含まれている前提
   return role as ChatUiRole;
 }
 
 export const ChatPage: FC<ChatPageProps> = (props) => {
   const { data: session } = useSession();
+
+  // ★ 管理者判定
+  const adminEmails = (process.env.NEXT_PUBLIC_SL_ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const me = (session?.user as any)?.email?.toLowerCase?.() ?? "";
+  const isAdmin = adminEmails.includes(me);
 
   useEffect(() => {
     chatStore.initChatSession({
@@ -65,6 +72,7 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
         chatThread={props.chatThread}
         chatDocuments={props.chatDocuments}
         extensions={props.extensions}
+        isAdmin={isAdmin} // ★ 追加
       />
       <ChatMessageContainer ref={current}>
         <ChatMessageContentArea>
