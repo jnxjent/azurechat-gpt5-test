@@ -418,9 +418,7 @@ async function executeCreateImage(
         prompt,
         n: 1,
         size,
-        response_format: "b64_json",
-        reasoning_effort: modeOpts?.reasoning_effort,
-        temperature: modeOpts?.temperature,
+        
       }),
       signal,
       cache: "no-store",
@@ -428,6 +426,7 @@ async function executeCreateImage(
 
     const responseText = await res.text();
     if (!res.ok) {
+      console.error("🔴 Image API error response:", responseText); // ← 追加
       return { error: `There was an error creating the image: HTTP ${res.status}.` };
     }
     try {
