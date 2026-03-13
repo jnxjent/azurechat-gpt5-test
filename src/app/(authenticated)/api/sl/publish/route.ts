@@ -165,11 +165,7 @@ async function graphPutBinary(
   buffer: Buffer,
   mimeType: string
 ): Promise<any> {
-  const bodyBytes = new Uint8Array(
-    buffer.buffer,
-    buffer.byteOffset,
-    buffer.byteLength
-  );
+  const bodyBlob = new Blob([buffer], { type: mimeType });
 
   const res = await fetch(uploadUrl, {
     method: "PUT",
@@ -177,7 +173,7 @@ async function graphPutBinary(
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": mimeType,
     },
-    body: bodyBytes,
+    body: bodyBlob,
   });
 
   if (!res.ok) {
