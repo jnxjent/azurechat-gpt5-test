@@ -59,6 +59,11 @@ export async function executeCreateImage(
     deployment
   )}/images/generations?api-version=${encodeURIComponent(apiVersion)}`;
 
+  console.log("🔵 imageGenUrl:", imageGenUrl);
+  console.log("🔵 deployment:", deployment);
+  console.log("🔵 apiVersion:", apiVersion);
+  console.log("🔵 endpoint:", endpoint);
+
   let json: any;
   try {
     const res = await fetch(imageGenUrl, {
@@ -71,8 +76,7 @@ export async function executeCreateImage(
         n: 1,
         size,
         response_format: "b64_json",
-        reasoning_effort: modeOpts?.reasoning_effort,
-        temperature: modeOpts?.temperature,
+        
       }),
       signal,
       cache: "no-store",
@@ -80,6 +84,7 @@ export async function executeCreateImage(
 
     const responseText = await res.text();
     if (!res.ok) {
+      console.error("🔴 Image API error response:", responseText); // ← この行を追加
       return {
         error: `There was an error creating the image: HTTP ${res.status}.`,
       };
