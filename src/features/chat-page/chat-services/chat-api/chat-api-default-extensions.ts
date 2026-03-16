@@ -2,6 +2,8 @@
 "use server";
 import "server-only";
 
+import { OpenAIDALLEInstance } from "@/features/common/services/openai"; // ★ 追加
+
 import { ServerActionResponse } from "@/features/common/server-action-response";
 import { uniqueId } from "@/features/common/util";
 import { GetImageUrl, UploadImageToStore } from "../chat-image-service";
@@ -15,7 +17,6 @@ import {
 
 type ThinkingModeAPI = "normal" | "thinking" | "fast";
 
-/** standard を normal へ、その他はそのまま（保険） */
 function normalizeThinkingMode(
   input?: ThinkingModeAPI | ThinkingModeInput
 ): ThinkingModeAPI {
@@ -23,9 +24,6 @@ function normalizeThinkingMode(
   return c as ThinkingModeAPI;
 }
 
-/**
- * 画像URLを組み立てる共通ヘルパー
- */
 function buildExternalImageUrl(threadId: string, fileName: string): string {
   const publicBase = process.env.NEXT_PUBLIC_IMAGE_URL;
   if (publicBase) {
@@ -42,14 +40,10 @@ function buildExternalImageUrl(threadId: string, fileName: string): string {
   return GetImageUrl(threadId, fileName);
 }
 
-/* ------------------------------------------------------------------ */
-/* NL スタイルヒント → パラメータ変換                                  */
-/* ------------------------------------------------------------------ */
-
 type StyleParams = {
   font?: string;
   size?: "small" | "medium" | "large" | "xlarge";
-  sizeAdjust?: "larger" | "smaller"; // ★ 相対的なサイズ調整
+  sizeAdjust?: "larger" | "smaller";
   align?: "left" | "center" | "right";
   vAlign?: "top" | "middle" | "bottom";
   bottomMargin?: number;
@@ -58,18 +52,17 @@ type StyleParams = {
   color?: string;
 };
 
-/** ★ スレッドごとの「直近のテキスト位置」を保持する状態 */
 type TextLayout = {
   align: "left" | "center" | "right";
   vAlign: "top" | "middle" | "bottom";
   offsetX: number;
   offsetY: number;
-  size: "small" | "medium" | "large" | "xlarge"; // ★ サイズも記憶
-  text: string; // ★ テキスト内容も記憶
-  color?: string; // ★ 色も記憶
-  fontFamily?: "gothic" | "mincho" | "meiryo"; // ★ フォント種別も記憶
-  bold?: boolean; // ★ 太字も記憶
-  italic?: boolean; // ★ イタリックも記憶
+  size: "small" | "medium" | "large" | "xlarge";
+  text: string;
+  color?: string;
+  fontFamily?: "gothic" | "mincho" | "meiryo";
+  bold?: boolean;
+  italic?: boolean;
 };
 
 const lastTextLayoutByThread = new Map<string, TextLayout>();
@@ -80,7 +73,6 @@ function parseStyleHint(styleHint?: string): StyleParams {
 
   const p: StyleParams = {};
 
-  // ---- サイズ系（絶対指定）----
   if (s.includes("特大") || s.includes("ドーン") || s.includes("めちゃ大")) {
     p.size = "xlarge";
   } else if (
@@ -95,7 +87,6 @@ function parseStyleHint(styleHint?: string): StyleParams {
     p.size = "medium";
   }
 
-  // ★ サイズ系（相対指定）★
   if (
     s.includes("もう少し大きく") ||
     s.includes("もうちょっと大きく") ||
@@ -114,7 +105,6 @@ function parseStyleHint(styleHint?: string): StyleParams {
     p.sizeAdjust = "smaller";
   }
 
-  // ---- 垂直位置（下 / 上 / 真ん中）----
   if (
     s.includes("一番下") ||
     s.includes("最下部") ||
@@ -139,7 +129,6 @@ function parseStyleHint(styleHint?: string): StyleParams {
     p.vAlign = "top";
   }
 
-  // ★ 中央判定は最後に（他の位置指定がない場合のみ）
   if (
     !p.vAlign &&
     (s.includes("真ん中") ||
@@ -150,28 +139,11 @@ function parseStyleHint(styleHint?: string): StyleParams {
     p.vAlign = "middle";
   }
 
-  // ---- ４隅ショートカット（水平位置より先に処理）----
-  if (s.includes("左上")) {
-    p.align = "left";
-    p.vAlign = "top";
-  }
-  if (s.includes("右上")) {
-    p.align = "right";
-    p.vAlign = "top";
-  }
-  if (s.includes("左下")) {
-    p.align = "left";
-    p.vAlign = "bottom";
-    p.bottomMargin = 80;
-  }
-  if (s.includes("右下")) {
-    p.align = "right";
-    p.vAlign = "bottom";
-    p.bottomMargin = 80;
-  }
+  if (s.includes("左上")) { p.align = "left"; p.vAlign = "top"; }
+  if (s.includes("右上")) { p.align = "right"; p.vAlign = "top"; }
+  if (s.includes("左下")) { p.align = "left"; p.vAlign = "bottom"; p.bottomMargin = 80; }
+  if (s.includes("右下")) { p.align = "right"; p.vAlign = "bottom"; p.bottomMargin = 80; }
 
-  // ---- 水平位置（左 / 右 を先に、中央は最後）----
-  // ★ 4隅で既に設定済みの場合はスキップ
   if (!p.align) {
     if (
       s.includes("左寄せ") ||
@@ -197,44 +169,22 @@ function parseStyleHint(styleHint?: string): StyleParams {
     }
   }
 
-  // ---- 微調整（少し右 / 少し上 など）----
-  if (s.includes("少し右") || s.includes("ちょい右") || s.includes("やや右")) {
-    p.offsetX = (p.offsetX ?? 0) + 80;
-  }
-  if (s.includes("少し左") || s.includes("ちょい左") || s.includes("やや左")) {
-    p.offsetX = (p.offsetX ?? 0) - 80;
-  }
-  if (s.includes("少し上") || s.includes("ちょい上") || s.includes("やや上")) {
-    p.offsetY = (p.offsetY ?? 0) - 60;
-  }
-  if (s.includes("少し下") || s.includes("ちょい下") || s.includes("やや下")) {
-    p.offsetY = (p.offsetY ?? 0) + 60;
-  }
+  if (s.includes("少し右") || s.includes("ちょい右") || s.includes("やや右")) p.offsetX = (p.offsetX ?? 0) + 80;
+  if (s.includes("少し左") || s.includes("ちょい左") || s.includes("やや左")) p.offsetX = (p.offsetX ?? 0) - 80;
+  if (s.includes("少し上") || s.includes("ちょい上") || s.includes("やや上")) p.offsetY = (p.offsetY ?? 0) - 60;
+  if (s.includes("少し下") || s.includes("ちょい下") || s.includes("やや下")) p.offsetY = (p.offsetY ?? 0) + 60;
 
-  // ---- 矢印による移動指定（→ ← ↑ ↓）----
-  if (s.includes("→") || s.includes("➡") || s.includes("➜") || s.includes("右矢印")) {
-    p.offsetX = (p.offsetX ?? 0) + 80;
-  }
-  if (s.includes("←") || s.includes("⬅") || s.includes("左矢印")) {
-    p.offsetX = (p.offsetX ?? 0) - 80;
-  }
-  if (s.includes("↑") || s.includes("⬆") || s.includes("上矢印")) {
-    p.offsetY = (p.offsetY ?? 0) - 60;
-  }
-  if (s.includes("↓") || s.includes("⬇") || s.includes("下矢印")) {
-    p.offsetY = (p.offsetY ?? 0) + 60;
-  }
+  if (s.includes("→") || s.includes("➡") || s.includes("➜") || s.includes("右矢印")) p.offsetX = (p.offsetX ?? 0) + 80;
+  if (s.includes("←") || s.includes("⬅") || s.includes("左矢印")) p.offsetX = (p.offsetX ?? 0) - 80;
+  if (s.includes("↑") || s.includes("⬆") || s.includes("上矢印")) p.offsetY = (p.offsetY ?? 0) - 60;
+  if (s.includes("↓") || s.includes("⬇") || s.includes("下矢印")) p.offsetY = (p.offsetY ?? 0) + 60;
 
-  // ---- フォント ----
   if (s.includes("メイリオ")) p.font = "Meiryo";
   if (s.includes("游ゴシック") || s.includes("游ｺﾞｼｯｸ")) p.font = "Yu Gothic";
   if (s.includes("ゴシック")) p.font = "Yu Gothic";
   if (s.includes("明朝")) p.font = "Yu Mincho";
-  if (s.includes("手書き") || s.includes("手書き風")) {
-    p.font = "Comic Sans MS";
-  }
+  if (s.includes("手書き") || s.includes("手書き風")) p.font = "Comic Sans MS";
 
-  // ---- 色 ----
   if (s.includes("白文字") || s.includes("白")) p.color = "#ffffff";
   if (s.includes("黒文字") || s.includes("黒")) p.color = "#000000";
   if (s.includes("赤文字") || s.includes("赤")) p.color = "red";
@@ -243,8 +193,6 @@ function parseStyleHint(styleHint?: string): StyleParams {
 
   return p;
 }
-
-/* ------------------------------------------------------------------ */
 
 export const GetDefaultExtensions = async (props: {
   chatThread: ChatThreadModel;
@@ -263,7 +211,6 @@ export const GetDefaultExtensions = async (props: {
     temperature: modeOpts.temperature,
   });
 
-  // ★ 画像生成ツール（新しく描く用）
   defaultExtensions.push({
     type: "function",
     function: {
@@ -291,12 +238,12 @@ export const GetDefaultExtensions = async (props: {
       description:
         "Use this tool ONLY when user clearly asks for a NEW image to be created. " +
         "If user wants to MODIFY or add text to an ALREADY GENERATED image, you MUST NOT call this tool. " +
-        "Instead, call add_text_to_existing_image with the previous image URL.",
+        "Instead, call add_text_to_existing_image with the previous image URL." +
+        "After this tool returns a url, you MUST display the image using Markdown image syntax: ![image](url). Never output the URL as plain text.",
       name: "create_img",
     },
   });
 
-  // ★ 既存画像に文字だけ足すツール（Vision を使わないシンプル版）
   defaultExtensions.push({
     type: "function",
     function: {
@@ -365,7 +312,7 @@ export const GetDefaultExtensions = async (props: {
   return { status: "OK", response: defaultExtensions };
 };
 
-// ---------------- 画像生成（NEW image 用） ----------------
+// ---------------- 画像生成（NEW image 用）★ OpenAIDALLEInstance方式に変更 ----------------
 async function executeCreateImage(
   args: { prompt: string; text?: string; size?: string },
   chatThread: ChatThreadModel,
@@ -377,94 +324,42 @@ async function executeCreateImage(
   }
 ) {
   const prompt = (args?.prompt || "").trim();
-  const size = (args?.size || "1024x1024").trim();
 
   console.log("createImage called with prompt:", prompt);
-  console.log("createImage (initial) will NOT add text overlay in this version.");
-  console.log("🧩 reasoning_effort in request:", modeOpts?.reasoning_effort || "none");
 
   if (!prompt) return "No prompt provided";
   if (prompt.length >= 4000)
     return "Prompt is too long, it must be less than 4000 characters";
 
-  const endpointRaw = process.env.AZURE_OPENAI_ENDPOINT || "";
-  const endpoint = endpointRaw.replace(/\/+$/, "");
-  const apiKey = process.env.AZURE_OPENAI_API_KEY || "";
-  const deployment = process.env.AZURE_OPENAI_IMAGE_DEPLOYMENT || "";
-  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2025-04-01-preview";
+  // ★ OpenAIDALLEInstance() 方式に変更（gpt-image-1.5対応）
+  const openAI = OpenAIDALLEInstance();
 
-  if (!endpoint || !/^https:\/\/.+\.openai\.azure\.com$/i.test(endpoint)) {
-    return { error: "Image generation is not configured: invalid AZURE_OPENAI_ENDPOINT." };
-  }
-  if (!apiKey) {
-    return { error: "Image generation is not configured: missing AZURE_OPENAI_API_KEY." };
-  }
-  if (!deployment) {
-    return {
-      error: "Image generation is not configured: missing AZURE_OPENAI_IMAGE_DEPLOYMENT.",
-    };
-  }
-
-  const imageGenUrl = `${endpoint}/openai/deployments/${encodeURIComponent(
-    deployment
-  )}/images/generations?api-version=${encodeURIComponent(apiVersion)}`;
-
-  let json: any;
+  let response;
   try {
-    const res = await fetch(imageGenUrl, {
-      method: "POST",
-      headers: { "api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt,
-        n: 1,
-        size,
-        response_format: "b64_json",
-        reasoning_effort: modeOpts?.reasoning_effort,
-        temperature: modeOpts?.temperature,
-      }),
-      signal,
-      cache: "no-store",
-    });
-
-    const responseText = await res.text();
-    if (!res.ok) {
-      return { error: `There was an error creating the image: HTTP ${res.status}.` };
-    }
-    try {
-      json = JSON.parse(responseText);
-    } catch {
-      return { error: "Invalid JSON response from Azure." };
-    }
+    response = await openAI.images.generate(
+      { model: "gpt-image-1.5", prompt },
+      { signal }
+    );
   } catch (error) {
     console.error("🔴 error while calling Azure image gen:\n", error);
     return { error: "There was an error creating the image: " + error };
   }
 
-  const data0 = json?.data?.[0];
-  const b64 = data0?.b64_json as string | undefined;
-  const urlDirect = data0?.url as string | undefined;
-
-  if (!b64 && !urlDirect) return { error: "Invalid API response: no data[0].b64_json/url." };
+  if (!response.data?.[0]?.b64_json) {
+    return { error: "Invalid API response: no b64_json." };
+  }
 
   try {
-    let baseImageUrl: string;
+    const imageName = `${uniqueId()}.png`;
+    const buffer = Buffer.from(response.data[0].b64_json, "base64");
 
-    if (b64) {
-      const imageName = `${uniqueId()}.png`;
-      const buffer = Buffer.from(b64, "base64");
+    await UploadImageToStore(chatThread.id, imageName, buffer);
+    await UploadImageToStore(chatThread.id, "__base__.png", buffer);
 
-      await UploadImageToStore(chatThread.id, imageName, buffer);
-      await UploadImageToStore(chatThread.id, "__base__.png", buffer);
+    lastTextLayoutByThread.delete(chatThread.id);
+    console.log("🗑️ Cleared text layout for thread:", chatThread.id);
 
-      // ★ 新しい元絵を作ったので、そのスレッドの位置状態はリセット
-      lastTextLayoutByThread.delete(chatThread.id);
-      console.log("🗑️ Cleared text layout for thread:", chatThread.id);
-
-      baseImageUrl = buildExternalImageUrl(chatThread.id, imageName);
-    } else {
-      baseImageUrl = urlDirect!;
-    }
-
+    const baseImageUrl = buildExternalImageUrl(chatThread.id, imageName);
     return { revised_prompt: prompt, url: baseImageUrl };
   } catch (error) {
     console.error("🔴 error while storing image:\n", error);
@@ -493,12 +388,11 @@ async function executeAddTextToExistingImage(
   }
 ) {
   const explicitUrl = (args?.imageUrl || "").trim();
-  let text = (args?.text || "").trim(); // ★ let（必要なら強制維持するため）
+  let text = (args?.text || "").trim();
   const styleHint = (args?.styleHint || "").trim();
 
   const baseImageUrl = buildExternalImageUrl(chatThread.id, "__base__.png");
 
-  // ★★ デバッグ: Map の中身を確認
   console.log("🗺️ lastTextLayoutByThread MAP状態:", {
     threadId: chatThread.id,
     hasEntry: lastTextLayoutByThread.has(chatThread.id),
@@ -528,7 +422,6 @@ async function executeAddTextToExistingImage(
   const last = lastTextLayoutByThread.get(chatThread.id);
   console.log("📍 last layout from Map:", last);
 
-  // ★★ テキスト内容の検証（移動/サイズ/色だけなら text を強制維持）
   if (last?.text && text !== last.text) {
     console.warn("⚠️ Text content changed:", {
       previous: last.text,
@@ -546,7 +439,6 @@ async function executeAddTextToExistingImage(
     }
   }
 
-  // ---- 位置の決定ロジック ----
   const align: "left" | "center" | "right" =
     parsed.align !== undefined ? parsed.align : last?.align ?? "center";
 
@@ -555,18 +447,11 @@ async function executeAddTextToExistingImage(
 
   console.log("✅ resolved align/vAlign:", { align, vAlign });
 
-  // ---- サイズの決定ロジック（相対調整対応）----
   let size: "small" | "medium" | "large" | "xlarge" =
     (args.size as any) ?? parsed.size ?? last?.size ?? "large";
 
-  // ★ 相対的なサイズ調整
   if (parsed.sizeAdjust === "larger") {
-    const sizeOrder: Array<"small" | "medium" | "large" | "xlarge"> = [
-      "small",
-      "medium",
-      "large",
-      "xlarge",
-    ];
+    const sizeOrder: Array<"small" | "medium" | "large" | "xlarge"> = ["small", "medium", "large", "xlarge"];
     const currentIndex = sizeOrder.indexOf(size);
     if (currentIndex >= 0 && currentIndex < sizeOrder.length - 1) {
       const oldSize = size;
@@ -574,12 +459,7 @@ async function executeAddTextToExistingImage(
       console.log(`📏 Size adjusted larger: ${oldSize} → ${size}`);
     }
   } else if (parsed.sizeAdjust === "smaller") {
-    const sizeOrder: Array<"small" | "medium" | "large" | "xlarge"> = [
-      "small",
-      "medium",
-      "large",
-      "xlarge",
-    ];
+    const sizeOrder: Array<"small" | "medium" | "large" | "xlarge"> = ["small", "medium", "large", "xlarge"];
     const currentIndex = sizeOrder.indexOf(size);
     if (currentIndex > 0) {
       const oldSize = size;
@@ -588,7 +468,6 @@ async function executeAddTextToExistingImage(
     }
   }
 
-  // ---- 色の決定ロジック（★ 前回の値を継承）----
   const color = args.color ?? parsed.color ?? last?.color ?? "white";
 
   console.log("🎨 color resolution:", {
@@ -598,7 +477,6 @@ async function executeAddTextToExistingImage(
     finalColor: color,
   });
 
-  // ---- フォント種別の決定ロジック（★ 前回の値を継承）----
   const fontHint = ((styleHint || "") + " " + (args.font || "") + " " + (parsed.font || "")).toLowerCase();
 
   let fontFamily: "gothic" | "mincho" | "meiryo" = last?.fontFamily ?? "gothic";
@@ -617,37 +495,12 @@ async function executeAddTextToExistingImage(
     finalFontFamily: fontFamily,
   });
 
-  // ---- 太字 / イタリック（★ 前回の値を継承 + 解除対応）----
   const lowerHintAll = (hintSource || "").toLowerCase();
 
-  const boldOff =
-    hintSource.includes("太字やめ") ||
-    hintSource.includes("太字解除") ||
-    hintSource.includes("太字をやめ") ||
-    hintSource.includes("太字を解除") ||
-    hintSource.includes("通常") ||
-    lowerHintAll.includes("not bold") ||
-    lowerHintAll.includes("no bold");
-
-  const italicOff =
-    hintSource.includes("斜体やめ") ||
-    hintSource.includes("斜体解除") ||
-    hintSource.includes("イタリックやめ") ||
-    hintSource.includes("イタリック解除") ||
-    hintSource.includes("斜体をやめ") ||
-    hintSource.includes("斜体を解除") ||
-    lowerHintAll.includes("not italic") ||
-    lowerHintAll.includes("no italic");
-
-  const boldOn =
-    hintSource.includes("太字") ||
-    hintSource.includes("ボールド") ||
-    lowerHintAll.includes("bold");
-
-  const italicOn =
-    hintSource.includes("イタリック") ||
-    hintSource.includes("斜体") ||
-    lowerHintAll.includes("italic");
+  const boldOff = hintSource.includes("太字やめ") || hintSource.includes("太字解除") || hintSource.includes("太字をやめ") || hintSource.includes("太字を解除") || hintSource.includes("通常") || lowerHintAll.includes("not bold") || lowerHintAll.includes("no bold");
+  const italicOff = hintSource.includes("斜体やめ") || hintSource.includes("斜体解除") || hintSource.includes("イタリックやめ") || hintSource.includes("イタリック解除") || hintSource.includes("斜体をやめ") || hintSource.includes("斜体を解除") || lowerHintAll.includes("not italic") || lowerHintAll.includes("no italic");
+  const boldOn = hintSource.includes("太字") || hintSource.includes("ボールド") || lowerHintAll.includes("bold");
+  const italicOn = hintSource.includes("イタリック") || hintSource.includes("斜体") || lowerHintAll.includes("italic");
 
   const bold = boldOff ? false : boldOn ? true : (last?.bold ?? false);
   const italic = italicOff ? false : italicOn ? true : (last?.italic ?? false);
@@ -659,13 +512,11 @@ async function executeAddTextToExistingImage(
     finalItalic: italic,
   });
 
-  // ★ 「中央/上/下/四隅などの位置指定」が入ったら offset をリセット（UX向上）
   const positionSpecified =
     parsed.align !== undefined ||
     parsed.vAlign !== undefined ||
     /左上|右上|左下|右下|一番上|一番下|中央|真ん中|センター|上部|下部/.test(hintSource);
 
-  // ★ offset 計算
   const deltaOffsetX = (parsed.offsetX ?? 0) + (typeof args.offsetX === "number" ? args.offsetX : 0);
   const deltaOffsetY = (parsed.offsetY ?? 0) + (typeof args.offsetY === "number" ? args.offsetY : 0);
 
@@ -691,7 +542,6 @@ async function executeAddTextToExistingImage(
 
   const bottomMargin = parsed.bottomMargin;
 
-  // ★ 今回のレイアウトを保存（全属性を含める）
   lastTextLayoutByThread.set(chatThread.id, {
     align,
     vAlign,
@@ -717,18 +567,7 @@ async function executeAddTextToExistingImage(
 
   const genImageBase = baseUrl.replace(/\/+$/, "");
   console.log("[gen-image] base URL for overlay:", genImageBase);
-  console.log("[gen-image] resolved style params:", {
-    align,
-    vAlign,
-    size,
-    color,
-    fontFamily,
-    bold,
-    italic,
-    offsetX,
-    offsetY,
-    bottomMargin,
-  });
+  console.log("[gen-image] resolved style params:", { align, vAlign, size, color, fontFamily, bold, italic, offsetX, offsetY, bottomMargin });
 
   try {
     const resp = await fetch(`${genImageBase}/api/gen-image`, {
