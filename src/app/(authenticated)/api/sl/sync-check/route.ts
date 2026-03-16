@@ -1,10 +1,4 @@
 // app/(authenticated)/api/sl/sync-check/route.ts
-//
-// 委任トークン（セッション）で SharePoint SLフォルダを参照し、
-// Indexに残っている孤立ドキュメントを削除する。
-// - SharePoint: Graph (delegate / session accessToken)
-// - Azure AI Search: REST API (api-key)
-
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -13,15 +7,10 @@ import { getToken } from "next-auth/jwt";
 import { options as authOptions } from "@/features/auth-page/auth-api";
 import { getDeptConfig, getAllowedDepts } from "@/lib/sl-dept";
 
-// -------------------------------------------------------
-// Optional endpoint guard
-// -------------------------------------------------------
 async function requireSyncKey(req: NextRequest) {
-  // ブラウザからの管理者セッションがあればOK
   const session = await getServerSession(authOptions);
   if ((session?.user as any)?.email) return;
 
-  // Logic App等からはキーで認証
   const required = (process.env.SL_SYNC_CHECK_KEY ?? "").trim();
   if (!required) return;
 
@@ -31,9 +20,6 @@ async function requireSyncKey(req: NextRequest) {
   }
 }
 
-// -------------------------------------------------------
-// 委任Token取得（publish/route.ts と同じ考え方）
-// -------------------------------------------------------
 async function getValidAccessToken(req: NextRequest): Promise<string | null> {
   const token = await getToken({ req });
   if (!token) return null;
@@ -57,7 +43,7 @@ async function getValidAccessToken(req: NextRequest): Promise<string | null> {
   if (!tenantId || !clientId || !clientSecret) return accessToken;
 
   try {
-    const res = await fetch(
+    const res: Response = await fetch(
       `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
       {
         method: "POST",
@@ -86,9 +72,6 @@ async function getValidAccessToken(req: NextRequest): Promise<string | null> {
   }
 }
 
-// -------------------------------------------------------
-// Helpers
-// -------------------------------------------------------
 function encodeGraphPath(path: string): string {
   return (path ?? "")
     .split("/")
@@ -99,7 +82,7 @@ function encodeGraphPath(path: string): string {
 
 async function resolveSiteId(accessToken: string, siteUrl: string): Promise<string> {
   const url = new URL(siteUrl);
-  const res = await fetch(
+  const res: Response = await fetch(
     `https://graph.microsoft.com/v1.0/sites/${url.hostname}:${url.pathname}`,
     {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -116,7 +99,7 @@ async function resolveDriveId(
   siteId: string,
   driveName: string
 ): Promise<string> {
-  const res = await fetch(
+  const res: Response = await fetch(
     `https://graph.microsoft.com/v1.0/sites/${siteId}/drives`,
     {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -133,9 +116,6 @@ async function resolveDriveId(
   return drive.id as string;
 }
 
-// -------------------------------------------------------
-// Graph API: SharePoint folder file names
-// -------------------------------------------------------
 async function getSpFileNames(
   accessToken: string,
   siteUrl: string,
@@ -153,12 +133,12 @@ async function getSpFileNames(
     `/root:/${folderPath}:/children?$select=name,file&$top=200`;
 
   while (nextUrl) {
-    const res = await fetch(nextUrl, {
+    const res: Response = await fetch(nextUrl, { // ★ 修正箇所
       headers: { Authorization: `Bearer ${accessToken}` },
       cache: "no-store",
     });
 
-    if (res.status === 404) break; // folder not found -> empty
+    if (res.status === 404) break;
     if (!res.ok) throw new Error(`Failed to list folder: ${await res.text()}`);
 
     const json = await res.json();
@@ -171,16 +151,13 @@ async function getSpFileNames(
   return fileNames;
 }
 
-// -------------------------------------------------------
-// Azure Search: dept docs
-// -------------------------------------------------------
 async function getIndexDocs(
   dept: string
 ): Promise<Array<{ id: string; fileName: string }>> {
   const endpoint = process.env.AZURE_SEARCH_ENDPOINT;
   const indexName = process.env.AZURE_SEARCH_INDEX_NAME;
   const apiKey = process.env.AZURE_SEARCH_API_KEY;
-  
+
   if (!endpoint || !apiKey || !indexName) {
     throw new Error("Missing Azure Search env vars (AZURE_SEARCH_ENDPOINT/API_KEY/INDEX_NAME)");
   }
@@ -190,7 +167,7 @@ async function getIndexDocs(
   const top = 200;
 
   while (true) {
-    const res = await fetch(
+    const res: Response = await fetch(
       `${endpoint}/indexes/${indexName}/docs?api-version=2024-07-01` +
         `&$select=id,fileUrl,dept` +
         `&$filter=dept eq '${dept.replace(/'/g, "''")}'` +
@@ -232,9 +209,6 @@ function safeDecodeURIComponent(v: string): string {
   }
 }
 
-// -------------------------------------------------------
-// Azure Search: delete docs by ids
-// -------------------------------------------------------
 async function deleteIndexDocs(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
 
@@ -250,7 +224,7 @@ async function deleteIndexDocs(ids: string[]): Promise<void> {
     value: ids.map((id) => ({ "@search.action": "delete", id })),
   };
 
-  const res = await fetch(
+  const res: Response = await fetch(
     `${endpoint}/indexes/${indexName}/docs/index?api-version=2024-07-01`,
     {
       method: "POST",
@@ -264,9 +238,6 @@ async function deleteIndexDocs(ids: string[]): Promise<void> {
   console.log(`[SL sync-check] Deleted ${ids.length} index docs`);
 }
 
-// -------------------------------------------------------
-// Route handlers
-// -------------------------------------------------------
 export async function OPTIONS() {
   return NextResponse.json({}, { status: 200 });
 }
