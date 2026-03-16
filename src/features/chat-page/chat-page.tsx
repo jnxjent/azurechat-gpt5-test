@@ -22,6 +22,7 @@ interface ChatPageProps {
   chatThread: ChatThreadModel;
   chatDocuments: Array<ChatDocumentModel>;
   extensions: Array<ExtensionModel>;
+  isAdmin?: boolean; // ★ 追加
 }
 
 // ChatMessageArea が受け取れるロール（UI 用）

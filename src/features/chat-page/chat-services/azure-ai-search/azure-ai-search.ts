@@ -232,7 +232,7 @@ export const ExtensionSimilaritySearch = async (props: {
 
       results.push({
         score: result.score,
-        document: newDocument as AzureSearchDocumentIndex,
+        document: newDocument as unknown as AzureSearchDocumentIndex,
       });
     }
 

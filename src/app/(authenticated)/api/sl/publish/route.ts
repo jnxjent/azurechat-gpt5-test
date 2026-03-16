@@ -165,10 +165,8 @@ async function graphPutBinary(
   buffer: Buffer,
   mimeType: string
 ): Promise<any> {
-  const arrayBuffer = buffer.buffer.slice(
-    buffer.byteOffset,
-    buffer.byteOffset + buffer.byteLength
-  );
+  // ★ SharedArrayBuffer問題を回避：Buffer を Uint8Array に変換
+  const uint8 = new Uint8Array(buffer);
 
   const res = await fetch(uploadUrl, {
     method: "PUT",
@@ -176,7 +174,7 @@ async function graphPutBinary(
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": mimeType,
     },
-    body: arrayBuffer,
+    body: uint8,  // ★ ArrayBuffer/SharedArrayBuffer ではなく Uint8Array を使う
   });
 
   if (!res.ok) {
