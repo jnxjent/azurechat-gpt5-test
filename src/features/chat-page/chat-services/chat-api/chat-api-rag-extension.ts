@@ -87,9 +87,11 @@ export const SearchAzureAISimilarDocuments = async (
 
     for (const citation of citationResponse) {
       if (citation.status === "OK") {
+        const doc = citation.response.content?.document;
         allCitations.push({
           id: citation.response.id,
-          content: citation.response.content,
+          name: doc?.metadata ?? "",
+          pageContent: doc?.pageContent ?? "",
         });
       }
     }

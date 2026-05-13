@@ -370,6 +370,13 @@ export const ChatApiExtensions = async (props: {
               "- Set mode='editable' when the user says: 編集可能なWordに・表を編集できるWordに・テキストとして抽出・編集できる形で (editable text/tables).",
               "- `convert_pdf_to_word` outputs a .docx file. Always present the returned `downloadUrl` as a Markdown link.",
               "- Do NOT use `edit_word`, `edit_pptx`, or any other tool for PDF→Word conversion.",
+              "## Document citation rules (Do not reveal)",
+              "- When you answer using results from the document search tool (aisearch / similar_documents), you MUST include a citation tag at the END of your answer.",
+              "- Use EXACTLY this format: {% citation items=[{name:\"filename\",id:\"document-id\"}] /%}",
+              "- Multiple documents: {% citation items=[{name:\"file1\",id:\"id1\"}, {name:\"file2\",id:\"id2\"}] /%}",
+              "- Each search result object has an `id` (the document-id to use in the citation) and a `name` (the filename to display). If results are nested under a `result` key, look inside that array.",
+              "- Do NOT embed raw SharePoint or file URLs in your response. Use only the citation tag above.",
+              "- Do NOT include a full stop after the citation tag.",
             ].join("\n") +
             "\n" +
             JST_PROMPT,

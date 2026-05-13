@@ -111,7 +111,6 @@ export const CrackDocument = async (
 
 // ---------- Excel (.xlsx / .xlsm) テキスト抽出 ----------
 async function extractExcelText(buffer: ArrayBuffer): Promise<string[]> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const XLSX = require("xlsx");
 
   const workbook = XLSX.read(Buffer.from(buffer), {
