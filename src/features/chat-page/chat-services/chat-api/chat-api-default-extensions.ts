@@ -691,8 +691,8 @@ function extractLatestDocxUrlFromMessages(messages: string[]): string | null {
   return null;
 }
 
-function extractLatestPdfOrDocxUrlFromMessages(messages: string[]): string | null {
-  const urlPattern = /https?:\/\/[^\s)\]]+\.(?:pdf|docx)(?:\?[^\s)\]]*)?/gi;
+function extractLatestPdfDocxOrImageUrlFromMessages(messages: string[]): string | null {
+  const urlPattern = /https?:\/\/[^\s)\]]+\.(?:pdf|docx|png|jpe?g|tiff?|bmp)(?:\?[^\s)\]]*)?/gi;
   for (const message of messages) {
     const matches = message.match(urlPattern);
     if (matches?.length) {
@@ -715,14 +715,14 @@ async function resolveLatestDocxUrlFromThread(chatThreadId: string): Promise<str
   }
 }
 
-async function resolveLatestPdfOrDocxUrlFromThread(chatThreadId: string): Promise<string | null> {
+async function resolveLatestPdfDocxOrImageUrlFromThread(chatThreadId: string): Promise<string | null> {
   try {
     const historyResponse = await FindTopChatMessagesForCurrentUser(chatThreadId, 20);
     if (historyResponse.status !== "OK") return null;
     const messages = historyResponse.response
       .map((message) => String(message.content ?? "").trim())
       .filter(Boolean);
-    return extractLatestPdfOrDocxUrlFromMessages(messages);
+    return extractLatestPdfDocxOrImageUrlFromMessages(messages);
   } catch {
     return null;
   }
@@ -1568,7 +1568,7 @@ export const GetDefaultExtensions = async (props: {
             ...args,
             fileUrl:
               String(args?.fileUrl ?? "").trim() ||
-              (await resolveLatestPdfOrDocxUrlFromThread(props.chatThread.id)) ||
+              (await resolveLatestPdfDocxOrImageUrlFromThread(props.chatThread.id)) ||
               "",
           },
           props.chatThread
@@ -1580,15 +1580,15 @@ export const GetDefaultExtensions = async (props: {
           fileUrl: {
             type: "string",
             description:
-              "変換対象のPDF/WordファイルのURL。このスレッドでアップロードされた.pdf/.docxのURL。省略時はスレッド内の最新PDF/Wordを自動解決する。",
+              "変換対象のファイルのURL。このスレッドでアップロードされた.pdf/.docx/.png/.jpg/.jpeg/.tif/.tiff/.bmpのURL。省略時はスレッド内の最新ファイルを自動解決する。",
           },
         },
         required: [],
       },
       description:
-        "このスレッドでアップロードされたPDFまたはWord（.docx）ファイルをExcel（.xlsx）に変換するツール。\n" +
-        "使用タイミング：ユーザーがPDF/WordをExcelに変換したいと言った場合。\n" +
-        "fileUrl は省略可能。省略するとスレッド内の最新PDF/Wordを自動的に使用する。\n" +
+        "このスレッドでアップロードされたPDF、Word（.docx）、または画像ファイル（.png/.jpg/.jpeg/.tif/.tiff/.bmp）をExcel（.xlsx）に変換するツール。\n" +
+        "使用タイミング：ユーザーがPDF/Word/画像をExcelに変換したいと言った場合。\n" +
+        "fileUrl は省略可能。省略するとスレッド内の最新ファイルを自動的に使用する。\n" +
         "テーブルはシートに、テーブルがない場合はテキストを「Text」シートに出力する。\n" +
         "ツールが返した downloadUrl を必ずMarkdownリンク形式 [ファイル名](downloadUrl) でユーザーに提示すること。",
       name: "convert_pdf_to_excel",
@@ -2183,7 +2183,7 @@ async function executeConvertPdfToExcel(
   let { fileUrl } = args ?? {};
 
   if (!fileUrl?.trim()) {
-    fileUrl = (await resolveLatestPdfOrDocxUrlFromThread(chatThread.id)) ?? "";
+    fileUrl = (await resolveLatestPdfDocxOrImageUrlFromThread(chatThread.id)) ?? "";
   }
 
   if (!fileUrl?.trim()) {

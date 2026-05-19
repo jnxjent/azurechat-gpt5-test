@@ -95,6 +95,12 @@ def _process_with_doc_intel(pdf_path: str, wb: openpyxl.Workbook) -> dict | None
     content_type_map = {
         ".pdf":  "application/pdf",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".png":  "image/png",
+        ".jpg":  "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".tif":  "image/tiff",
+        ".tiff": "image/tiff",
+        ".bmp":  "image/bmp",
     }
     content_type = content_type_map.get(input_ext, "application/octet-stream")
     print(f"[pdf_to_excel] Using Azure Document Intelligence (prebuilt-layout) ext={input_ext}.", file=sys.stderr)
