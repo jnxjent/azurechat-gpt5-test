@@ -127,7 +127,6 @@ function parseDirectAccentColor(instruction: string): string | undefined {
 
 async function buildEditPlan(slides: SlideSummary[], instruction: string): Promise<EditPlan> {
   const openai = OpenAIInstance();
-  const pptModel = process.env.AZURE_OPENAI_PPT_DEPLOYMENT_NAME ?? process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME!;
 
   const systemPrompt = `You convert a natural-language PowerPoint editing request into a safe JSON edit plan.
 Return JSON only in this shape:
@@ -179,7 +178,7 @@ ${JSON.stringify(slides, null, 2)}
 Return JSON only.`;
 
   const res = await openai.chat.completions.create({
-    model: pptModel,
+    model: process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME!,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
