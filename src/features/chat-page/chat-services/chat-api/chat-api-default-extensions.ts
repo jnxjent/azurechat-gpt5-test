@@ -4118,8 +4118,31 @@ async function buildRegenerationSlidesForLayoutChange(
   }
 
   const rawSlides = (parsed as any)?.slides;
-  if (!Array.isArray(rawSlides) || rawSlides.length !== slides.length) {
-    throw new Error("レイアウト再生成用のスライド数が一致しませんでした。");
+  if (!Array.isArray(rawSlides) || rawSlides.length === 0) {
+    throw new Error("レイアウト再生成用のJSON形式が不正でした（slides配列なし）。");
+  }
+
+  // スライド数不一致: LLM がターゲットスライドのみ返した場合などに対応
+  // baseSlides（元データ）ベースで返し、ターゲット分だけ LLM 出力で上書きする
+  if (rawSlides.length !== slides.length) {
+    console.warn(
+      `[buildRegenerationSlidesForLayoutChange] slide count mismatch: LLM=${rawSlides.length} expected=${slides.length}. Merging target slides only.`
+    );
+    const targetList = Array.from(targetSlideIndices).sort((a, b) => a - b);
+    return baseSlides.map((base, i) => {
+      const slideIndex = slides[i]?.slideIndex ?? i;
+      if (!targetSlideIndices.has(slideIndex)) return base;
+      const llmMatch =
+        rawSlides.find((r: any) => r.slideIndex === slideIndex) ??
+        (targetList.length === 1 ? rawSlides[0] : null);
+      if (!llmMatch) return base;
+      return {
+        title: llmMatch.title ?? base.title,
+        bullets: Array.isArray(llmMatch.bullets) ? llmMatch.bullets : base.bullets,
+        layoutType: llmMatch.layoutType ?? base.layoutType,
+        ...(Array.isArray(llmMatch.cards) && llmMatch.cards.length > 0 ? { cards: llmMatch.cards } : {}),
+      };
+    });
   }
 
   return rawSlides.map((raw: any, i: number): PptxRegenSlide => {
@@ -4447,6 +4470,55 @@ async function executeEditPptx(
       if (!directEditJson?.downloadUrl) throw new Error("PowerPoint layout edit did not return a download URL");
       const directDisplayName = `${directOutputName}.pptx`;
       console.log(`[layout_direct_edit] changedSlides=${directEditJson.changedSlides ?? 0} targets=${Array.from(layoutTargetIndices).join(",")} total=${Date.now() - t0}ms`);
+
+      // レイアウト変換と同時に色変更指示がある場合は、変換後ファイルに色変更を追加適用
+      const hasColorChange = /(色|カラー|color|トーン|tone).{0,30}(変え|変更|替え|にして|に変)/i.test(instruction);
+      if (hasColorChange) {
+        // 「AからBに変更」のBだけを含む簡潔な指示を生成（A=変更前色が先にヒットしないよう）
+        const afterFrom = instruction.match(/から[^。\n]*?(緑|青|赤|黄|紫|橙|ピンク|ネイビー|モノクロ|グレー|green|blue|red|yellow|purple|orange|pink|navy|gray)/i);
+        const colorInstruction = afterFrom
+          ? `全体の色を${afterFrom[1]}のトーンに変更してください。`
+          : instruction;
+        try {
+          const colorRes = await fetch(`${baseUrl}/api/edit-pptx`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileUrl: directEditJson.downloadUrl,
+              instruction: colorInstruction,
+              threadId: chatThread.id,
+              outputBaseName: directOutputName,
+            }),
+          });
+          if (colorRes.ok) {
+            const colorJson = await colorRes.json();
+            if (colorJson?.downloadUrl) {
+              return {
+                downloadUrl: colorJson.downloadUrl,
+                fileName: colorJson.fileName ?? directDisplayName,
+                displayName: directDisplayName,
+                message: "指定スライドをカード型に変更し、全体の色も変更しました。",
+              };
+            }
+          }
+          console.warn("[layout_direct_edit] color step returned no URL, returning layout-only result");
+          return {
+            downloadUrl: directEditJson.downloadUrl,
+            fileName: directEditJson.fileName ?? directDisplayName,
+            displayName: directDisplayName,
+            message: "カード型への変更は成功しました。色変更の適用に失敗したため、レイアウト変更のみ反映されています。",
+          };
+        } catch (e) {
+          console.warn("[layout_direct_edit] color step failed:", e);
+          return {
+            downloadUrl: directEditJson.downloadUrl,
+            fileName: directEditJson.fileName ?? directDisplayName,
+            displayName: directDisplayName,
+            message: "カード型への変更は成功しました。色変更の適用中にエラーが発生したため、レイアウト変更のみ反映されています。",
+          };
+        }
+      }
+
       return {
         downloadUrl: directEditJson.downloadUrl,
         fileName: directEditJson.fileName ?? directDisplayName,
