@@ -1127,7 +1127,7 @@ async function resolveConvertPdfToWordScriptPath(): Promise<string> {
   throw new Error(`pdf_to_word.py not found. Checked: ${candidates.join(", ")}`);
 }
 
-async function runPythonPdfToWord(inputBuffer: Buffer, threadId: string, mode: "layout" | "editable" = "layout") {
+async function runPythonPdfToWord(inputBuffer: Buffer, _threadId: string, mode: "layout" | "editable" = "layout", fileUrl?: string) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "azurechat-pdf2docx-"));
   const inputPath = path.join(tempDir, "input.pdf");
   const outputPath = path.join(tempDir, "output.docx");
@@ -1163,7 +1163,7 @@ async function runPythonPdfToWord(inputBuffer: Buffer, threadId: string, mode: "
     }
 
     const outputBuffer = await fs.readFile(outputPath);
-    const fileName = `${threadId || uniqueId()}_converted_${uniqueId()}.docx`;
+    const fileName = buildOutputFileName(fileUrl, "_変換後.docx");
     const downloadUrl = await uploadWordToBlob(outputBuffer, fileName);
 
     return {
@@ -1293,7 +1293,7 @@ async function buildAccountNameCorrectionPlan(excelBuffer: Buffer): Promise<Exce
   return { sheetEdits };
 }
 
-async function runPythonPdfToExcel(inputBuffer: Buffer, threadId: string, fileUrl?: string) {
+async function runPythonPdfToExcel(inputBuffer: Buffer, _threadId: string, fileUrl?: string) {
   const inputExt = fileUrl ? (getFileExtension(fileUrl) || ".pdf") : ".pdf";
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "azurechat-pdf2xl-"));
   const inputPath = path.join(tempDir, `input${inputExt}`);
@@ -1383,7 +1383,7 @@ async function runPythonPdfToExcel(inputBuffer: Buffer, threadId: string, fileUr
 async function runPythonRefineExcelPages(
   excelBuffer: Buffer,
   targetSheets: string[],
-  threadId: string,
+  _threadId: string,
   outputFileName?: string
 ): Promise<{ downloadUrl: string; fileName: string; refined: number; skipped: number }> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "azurechat-refine-"));
@@ -1548,20 +1548,25 @@ Return JSON only.`;
       { role: "user", content: userPrompt },
     ],
     response_format: { type: "json_object" },
-    max_completion_tokens: 4000,
+    max_completion_tokens: 8000,
   });
 
   const raw = res.choices[0]?.message?.content ?? "{}";
   const finishReason = res.choices[0]?.finish_reason;
   if (finishReason === "length") {
-    console.warn("[buildWordEditPlan] LLM response truncated (finish_reason=length). Plan may be incomplete.");
+    console.warn("[buildWordEditPlan] LLM response truncated (finish_reason=length). Returning user-friendly error.");
+    throw new Error(
+      "編集プランが大きすぎて生成が途中で切れました。" +
+      "まず「誤字候補を一覧で指摘して」と入力して候補を抽出し、" +
+      "その後「○○を××に置換」のような具体的な置換リストで修正してください。"
+    );
   }
   let parsed: WordEditPlan;
   try {
     parsed = JSON.parse(raw) as WordEditPlan;
   } catch {
     console.error("[buildWordEditPlan] JSON.parse failed. raw=", raw.slice(0, 200));
-    throw new Error("編集プランの生成に失敗しました（JSONパースエラー）。指示を短くして再試行してください。");
+    throw new Error("編集プランの生成に失敗しました（JSONパースエラー）。指示を分割して再試行してください。");
   }
   parsed.replaceText ??= [];
   parsed.formatRuns ??= [];
@@ -1748,7 +1753,7 @@ async function resolveEditPptxScriptPath(): Promise<string> {
   throw new Error(`edit_pptx.py not found. Checked: ${candidates.join(", ")}`);
 }
 
-async function runPythonEdit(inputBuffer: Buffer, plan: EditPlan, threadId: string, fileBaseName?: string) {
+async function runPythonEdit(inputBuffer: Buffer, plan: EditPlan, _threadId: string, fileBaseName?: string) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "azurechat-pptx-"));
   const inputPath = path.join(tempDir, "input.pptx");
   const outputPath = path.join(tempDir, "output.pptx");
@@ -1989,7 +1994,7 @@ export async function POST(req: NextRequest) {
     if (action === "pdf_to_word") {
       const pdfBuffer = await downloadBlob(fileUrl, threadId);
       const wordMode = mode === "editable" ? "editable" : "layout";
-      const result = await runPythonPdfToWord(pdfBuffer, threadId, wordMode);
+      const result = await runPythonPdfToWord(pdfBuffer, threadId, wordMode, fileUrl);
       console.log("[pdf-to-word] result:", JSON.stringify(result));
       return NextResponse.json({ ok: true, ...result });
     }
