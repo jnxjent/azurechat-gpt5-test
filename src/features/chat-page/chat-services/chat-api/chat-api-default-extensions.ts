@@ -1827,7 +1827,7 @@ export const GetDefaultExtensions = async (props: {
           fileQuery: {
             type: "string",
             description:
-              "SharePoint/SL上にあるPDFのファイル名またはキーワード。fileUrlと同時指定しない。",
+              "SharePoint/SLにあるPDFのファイル名またはキーワード。SharePointのPDFをWordに変換する場合はこちらを使用する。fileUrl と排他。",
           },
           mode: {
             type: "string",
@@ -1852,17 +1852,7 @@ export const GetDefaultExtensions = async (props: {
   defaultExtensions.push({
     type: "function",
     function: {
-      function: async (args: any) => {
-        const fq = String(args?.fileQuery ?? "").trim();
-        const fu = String(args?.fileUrl ?? "").trim();
-        return await executeConvertPdfToExcel(
-          {
-            ...args,
-            fileUrl: fu || (!fq ? (await resolveLatestPdfOrDocxUrlFromThread(props.chatThread.id)) || "" : ""),
-          },
-          props.chatThread
-        );
-      },
+      function: async (args: any) => await executeConvertPdfToExcel(args, props.chatThread),
       parse: (input: string) => JSON.parse(input),
       parameters: {
         type: "object",
@@ -1875,7 +1865,7 @@ export const GetDefaultExtensions = async (props: {
           fileQuery: {
             type: "string",
             description:
-              "SharePoint/SL上にあるPDF/Wordファイルのファイル名またはキーワード。fileUrlと同時指定しない。",
+              "SharePoint/SLにあるPDF/WordのファイルQuery（ファイル名またはキーワード）。SharePointのファイルを変換する場合はこちらを使用する。fileUrl と排他。",
           },
         },
         required: [],
@@ -4411,6 +4401,18 @@ async function executeEditPptx(
     /(色|色味|カラー|トーン|tone|緑|青|赤|黄|紫|オレンジ|ピンク|グレー|グリーン|ブルー|レッド|navy|orange|green|blue|red|yellow|purple|pink|gray)/i.test(instruction);
   const isColorOnlyEdit = hasColorIntent && !hasLayoutIntent;
   const isLayoutConversionRequest = !isColorOnlyEdit && hasLayoutIntent;
+  // layout_regen パス内で色指定を検出するためのルックアップ（route.ts の parseDirectAccentColor と同値）
+  const detectLayoutAccentColor = (s: string): string | null => {
+    const t = s.toLowerCase();
+    if (/(赤|red)/.test(t)) return "C00000";
+    if (/(青|blue)/.test(t)) return "2F5597";
+    if (/(緑|green)/.test(t)) return "548235";
+    if (/(紫|purple)/.test(t)) return "7030A0";
+    if (/(オレンジ|orange|橙)/.test(t)) return "C55A11";
+    if (/(黄|yellow)/.test(t)) return "BF9000";
+    if (/(ピンク|pink)/.test(t)) return "C0508A";
+    return null;
+  };
   if (isLayoutConversionRequest) {
     try {
       const t0 = Date.now();
@@ -4475,55 +4477,43 @@ async function executeEditPptx(
       if (!directEditJson?.downloadUrl) throw new Error("PowerPoint layout edit did not return a download URL");
       const directDisplayName = `${directOutputName}.pptx`;
       console.log(`[layout_direct_edit] changedSlides=${directEditJson.changedSlides ?? 0} targets=${Array.from(layoutTargetIndices).join(",")} total=${Date.now() - t0}ms`);
-
-      // レイアウト変換と同時に色変更指示がある場合は、変換後ファイルに色変更を追加適用
-      const hasColorChange = /(色|カラー|color|トーン|tone).{0,30}(変え|変更|替え|にして|に変)/i.test(instruction);
-      if (hasColorChange) {
-        // 「AからBに変更」のBだけを含む簡潔な指示を生成（A=変更前色が先にヒットしないよう）
-        const afterFrom = instruction.match(/から[^。\n]*?(緑|青|赤|黄|紫|橙|ピンク|ネイビー|モノクロ|グレー|green|blue|red|yellow|purple|orange|pink|navy|gray)/i);
-        const colorInstruction = afterFrom
-          ? `全体の色を${afterFrom[1]}のトーンに変更してください。`
-          : instruction;
-        try {
-          const colorRes = await fetch(`${baseUrl}/api/edit-pptx`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              fileUrl: directEditJson.downloadUrl,
-              instruction: colorInstruction,
-              threadId: chatThread.id,
-              outputBaseName: directOutputName,
-            }),
-          });
-          if (colorRes.ok) {
-            const colorJson = await colorRes.json();
-            if (colorJson?.downloadUrl) {
-              return {
-                downloadUrl: colorJson.downloadUrl,
-                fileName: colorJson.fileName ?? directDisplayName,
-                displayName: directDisplayName,
-                message: "指定スライドをカード型に変更し、全体の色も変更しました。",
-              };
+      // 複合指示（カード型 + 色変更）の場合、レイアウト編集済みファイルに対してデッキ色を適用する
+      // hasColorIntent（単語存在チェック）ではなく、明示的な色変更要求のみに限定する
+      const hasExplicitDeckColorIntent =
+        /(色|色味).{0,8}(変え|変更|かえ|にして|替え)|(緑|青|赤|黄|紫|オレンジ|ピンク|ネイビー|グレー|グリーン|ブルー|レッド|green|blue|red|yellow|purple|orange|pink|navy|gray).{0,10}(にして|にかえ|に変え|に変更)/i.test(instruction);
+      if (hasExplicitDeckColorIntent) {
+        const accentColor = detectLayoutAccentColor(instruction);
+        if (accentColor) {
+          try {
+            const colorRes = await fetch(`${baseUrl}/api/edit-pptx`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                fileUrl: directEditJson.downloadUrl,
+                action: "apply_pptx_plan",
+                plan: { slideEdits: [], deckEdits: { accentColor, preserveTextColors: true } },
+                threadId: chatThread.id,
+                outputBaseName: directOutputName,
+              }),
+            });
+            if (colorRes.ok) {
+              const colorJson = await colorRes.json();
+              if (colorJson?.downloadUrl) {
+                console.log(`[layout_direct_edit] color_pass accentColor=#${accentColor}`);
+                return {
+                  downloadUrl: colorJson.downloadUrl,
+                  fileName: colorJson.fileName ?? directDisplayName,
+                  displayName: directDisplayName,
+                  message: "指定スライドをカード型に変更し、デッキ全体の色も変更しました。",
+                };
+              }
             }
+            console.warn("[layout_direct_edit] color pass failed, returning layout-only result");
+          } catch (e) {
+            console.warn("[layout_direct_edit] color pass error:", e);
           }
-          console.warn("[layout_direct_edit] color step returned no URL, returning layout-only result");
-          return {
-            downloadUrl: directEditJson.downloadUrl,
-            fileName: directEditJson.fileName ?? directDisplayName,
-            displayName: directDisplayName,
-            message: "カード型への変更は成功しました。色変更の適用に失敗したため、レイアウト変更のみ反映されています。",
-          };
-        } catch (e) {
-          console.warn("[layout_direct_edit] color step failed:", e);
-          return {
-            downloadUrl: directEditJson.downloadUrl,
-            fileName: directEditJson.fileName ?? directDisplayName,
-            displayName: directDisplayName,
-            message: "カード型への変更は成功しました。色変更の適用中にエラーが発生したため、レイアウト変更のみ反映されています。",
-          };
         }
       }
-
       return {
         downloadUrl: directEditJson.downloadUrl,
         fileName: directEditJson.fileName ?? directDisplayName,
@@ -5058,6 +5048,12 @@ async function executeConvertPdfToExcel(
   chatThread: ChatThreadModel
 ) {
   let { fileUrl, fileQuery } = args ?? {};
+  let spFileName: string | undefined;
+
+  if (fileUrl && /\.pptx(\?|$)/i.test(fileUrl)) {
+    console.error(`[convert_pdf_to_excel] fileUrl is PPTX, not PDF/Word: ${fileUrl.substring(0, 80)}`);
+    return { error: "変換対象はPDFまたはWordファイルを指定してください。PPTXファイルはExcel変換に使用できません。" };
+  }
 
   // SP fileQuery → SAS URL解決
   if (fileQuery?.trim() && !fileUrl?.trim()) {
@@ -5065,6 +5061,8 @@ async function executeConvertPdfToExcel(
     if ("error" in spResult) return spResult;
     if ("multipleFiles" in spResult) return spResult;
     fileUrl = spResult.resolvedUrl;
+    spFileName = spResult.fileName;
+    console.log(`[convert_pdf_to_excel] Resolved SP file: ${spResult.fileName}`);
   }
 
   if (!fileUrl?.trim()) {
@@ -5093,7 +5091,7 @@ async function executeConvertPdfToExcel(
     const res = await fetch(`${baseUrl}/api/edit-pptx`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileUrl, instruction: "", threadId: chatThread.id, action: "pdf_to_excel" }),
+      body: JSON.stringify({ fileUrl, instruction: "", threadId: chatThread.id, action: "pdf_to_excel", outputBaseName: spFileName }),
     });
 
     if (!res.ok) {
@@ -5250,6 +5248,12 @@ async function executeConvertPdfToWord(
   chatThread: ChatThreadModel
 ) {
   let { fileUrl, fileQuery, mode = "layout" } = args ?? {};
+  let spFileName: string | undefined;
+
+  if (fileUrl && /\.pptx(\?|$)/i.test(fileUrl)) {
+    console.error(`[convert_pdf_to_word] fileUrl is PPTX, not PDF: ${fileUrl.substring(0, 80)}`);
+    return { error: "変換対象はPDFファイルを指定してください。PPTXファイルはWord変換に使用できません。" };
+  }
 
   // SP fileQuery → SAS URL解決
   if (fileQuery?.trim() && !fileUrl?.trim()) {
@@ -5257,6 +5261,8 @@ async function executeConvertPdfToWord(
     if ("error" in spResult) return spResult;
     if ("multipleFiles" in spResult) return spResult;
     fileUrl = spResult.resolvedUrl;
+    spFileName = spResult.fileName;
+    console.log(`[convert_pdf_to_word] Resolved SP file: ${spResult.fileName}`);
   }
 
   // fileUrl未指定の場合はスレッド内の最新PDFを自動解決
@@ -5286,7 +5292,7 @@ async function executeConvertPdfToWord(
     const res = await fetch(`${baseUrl}/api/edit-pptx`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileUrl, instruction: "", threadId: chatThread.id, action: "pdf_to_word", mode }),
+      body: JSON.stringify({ fileUrl, instruction: "", threadId: chatThread.id, action: "pdf_to_word", mode, outputBaseName: spFileName }),
     });
 
     if (!res.ok) {
