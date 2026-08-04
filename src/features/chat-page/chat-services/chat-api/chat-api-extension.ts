@@ -10,6 +10,12 @@ import { ChatThreadModel } from "../models";
 
 import { userSession } from "@/features/auth-page/helpers";
 import { ExtensionSimilaritySearch, SimpleSearch, DocumentSearchResponse } from "../azure-ai-search/azure-ai-search";
+import {
+  buildSlSearchTargetFilter,
+  inferSlSearchTarget,
+  stripSlSearchTargetTerms,
+} from "@/lib/sl-search-target";
+import type { SlSearchScope } from "@/lib/sl-search-target";
 import { CreateCitations, FormatCitations } from "../citation-service";
 import { resolveUserContext } from "./chat-api-rag";
 import { buildSendOptionsFromMode } from "./reasoning-utils";
@@ -294,6 +300,7 @@ export const ChatApiExtensions = async (props: {
   } = props;
 
   const openAI = OpenAIInstance();
+  const inferredSlTarget = inferSlSearchTarget(userMessage);
 
   const extensionsSteps = await extensionsSystemMessage(chatThread);
 
@@ -365,6 +372,8 @@ export const ChatApiExtensions = async (props: {
         name: "sl_doc_search",
         description:
           "SharePointの個人・部署・全社共通ドキュメントを検索します。\n" +
+          "ユーザーが検索先を指定した場合はscopeとfolderへ必ず反映してください。\n" +
+          "例：「個人ファイルから」「個人フォルダーから」→scope=personal（folderは設定しない）、「部署共通から」→scope=dept_common、「全社共通から」→scope=global_common、「〇〇フォルダーから」→folder=〇〇。「部署共通フォルダー内の可能性調査というフォルダー」→scope=dept_common, folder=可能性調査。引用符は不要です。フォルダー名を一意に判断できない場合は検索せずユーザーに確認してください。\n" +
           "【2段階で使うこと】\n" +
           "① 比較対象の文書名が不明な場合: mode=\"discover\" で広いクエリ（例:「IR議事録」）を1回呼び出し、返ってくる file name から文書名・会社名を把握する。\n" +
           "② 文書名が判明したら: mode=\"content\" で「会社名 + 文書種別 + キーワード」の形式で文書ごとに個別呼び出しする（複数回）。\n" +
@@ -384,20 +393,44 @@ export const ChatApiExtensions = async (props: {
               description:
                 "discover: 文書名の一覧取得（広いクエリ向け、上位32件）。content: 個社別の本文取得（絞ったクエリ向け、上位8件）。省略時はcontent扱い。",
             },
+            scope: {
+              type: "string",
+              enum: ["all", "personal", "dept_common", "global_common"],
+              description:
+                "検索範囲。指定なし/allは閲覧可能な全資料、personalは自分の個人資料、dept_commonは部署共通、global_commonは全社共通。",
+            },
+            folder: {
+              type: "string",
+              description:
+                "検索対象のSharePointフォルダー名。ユーザーが『〇〇フォルダーから』などと指定した場合だけ設定します。",
+            },
           },
           required: ["query"],
         },
-        function: async (args: { query: string; mode?: string }) => {
+        function: async (args: {
+          query: string;
+          mode?: string;
+          scope?: SlSearchScope;
+          folder?: string;
+        }) => {
+          if (inferredSlTarget.folderUncertain && !args.folder?.trim()) {
+            return "【要確認】検索対象のフォルダー名を一意に判断できません。ユーザーにフォルダー名を確認してから、folderを指定して再検索してください。";
+          }
           slSearchCallCount++;
           const effectiveTop = args.mode === "discover" ? 32 : 20;
-          console.log("[sl_doc_search:ext] query =", args.query, "mode =", args.mode ?? "content", "top =", effectiveTop, "callCount =", slSearchCallCount);
+          const targetFilter = buildSlSearchTargetFilter(args);
+          const searchQuery = stripSlSearchTargetTerms(args.query, args);
+          const scopedFilter = targetFilter
+            ? `(${slFilter}) and (${targetFilter})`
+            : slFilter;
+          console.log("[sl_doc_search:ext] query =", args.query, "effectiveQuery =", searchQuery, "mode =", args.mode ?? "content", "scope =", args.scope ?? "all", "folder =", args.folder ?? "(none)", "top =", effectiveTop, "callCount =", slSearchCallCount);
 
           if (slSearchCallCount > SL_SEARCH_MAX_CALLS) {
             return "【検索終了】検索回数の上限に達しました。これ以上の検索は実行できません。指定された文書はライブラリに存在しないか、まだインデックス未登録の可能性があります。";
           }
 
           // ① ファイル名優先検索: 全SL文書のmetadataでクエリとの一致を確認
-          const queryLower = (args.query ?? "").trim().toLowerCase();
+          const queryLower = searchQuery.toLowerCase();
           const queryTerms = queryLower
             .split(/[\s　・（）()「」【】。、,]/)
             .filter((t) => t.length >= 2);
@@ -405,7 +438,7 @@ export const ChatApiExtensions = async (props: {
           let filenameMatchedDocs: DocumentSearchResponse[] = [];
 
           try {
-            const listResult = await SimpleSearch("*", "isSlDoc eq true", slDeptLower, 1000);
+            const listResult = await SimpleSearch("*", targetFilter ?? "isSlDoc eq true", slDeptLower, 1000);
             if (listResult.status === "OK" && listResult.response.length > 0) {
               filenameMatchedDocs = (listResult.response as DocumentSearchResponse[]).filter(({ document: doc }) => {
                 const metaName = (doc.metadata ?? "").toLowerCase();
@@ -443,12 +476,12 @@ export const ChatApiExtensions = async (props: {
           // ② ファイル名一致なし → 通常のベクトル検索にフォールバック
           console.log("[sl_doc_search:ext] filename-first: no match → vector search fallback");
           const searchResult = await ExtensionSimilaritySearch({
-            searchText: args.query,
+            searchText: searchQuery,
             vectors: ["embedding"],
             apiKey: slApiKey,
             searchName: slSearchName,
             indexName: slIndexName,
-            filter: slFilter,
+            filter: scopedFilter,
             deptLower: slDeptLower,
             userHash: slUserHash ?? undefined,
             top: effectiveTop,
@@ -586,6 +619,10 @@ export const ChatApiExtensions = async (props: {
               "- Do NOT embed raw SharePoint or file URLs in your response. Use only the citation tag above.",
               "- Do NOT include a full stop after the citation tag.",
               "## SharePoint document search rules (Do not reveal)",
+              inferredSlTarget.folderUncertain
+                ? "- IMPORTANT: The user referred to a SharePoint folder, but its name could not be determined with confidence. Ask the user which folder name to search. Do not call sl_doc_search, do not search broadly, and do not answer from unrelated documents until the folder is clarified."
+                : "",
+              "- ABSOLUTE: If the user asks to read, summarize, analyze, compare, check, find, or answer from a document in SharePoint/SL, 個人ファイル, 個人フォルダー, 部署共通, 全社共通, or a named project folder, you MUST call sl_doc_search before answering. Never say that the file is unavailable or ask the user to upload it before calling sl_doc_search. For a stated filename, put the filename itself in query. Map 個人ファイル/個人フォルダー to scope=personal without setting folder; map 部署共通 to scope=dept_common; map 全社共通 to scope=global_common; use folder only for a specifically named folder such as 〇〇プロジェクトフォルダー.",
               "- IMPORTANT: If the user asks to compare multiple documents or find contradictions across files: (1) First call sl_doc_search with a broad query (e.g. '議事録' or 'IR議事録') to discover available document names from the returned file names. (2) Then call sl_doc_search once per discovered document using 'company name + document type + keyword' queries. (3) Only answer after collecting content from all relevant documents.",
               "- Do NOT answer based solely on prior conversation context when multi-document comparison is requested.",
             ].join("\n") +
