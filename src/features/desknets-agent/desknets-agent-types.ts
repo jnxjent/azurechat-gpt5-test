@@ -1,3 +1,5 @@
+import type { DeskNetsStructuredCommand } from "./desknets-structured-command";
+
 export type DeskNetsAgentMode = "read" | "write";
 
 export type DeskNetsAgentRunStatus =
@@ -16,6 +18,16 @@ export type DeskNetsAgentRunRequest = {
   site: "desknets";
   mode: DeskNetsAgentMode;
   prompt: string;
+  structuredCommand?: DeskNetsStructuredCommand;
+};
+
+export type DeskNetsApprovalRequest = {
+  title: string;
+  start: string;
+  end: string;
+  participantIds: string[];
+  facilityId: string;
+  emailNotificationWillBeSent: boolean;
 };
 
 export type DeskNetsAgentRunResponse = {
@@ -31,6 +43,16 @@ export type DeskNetsAgentRunResponse = {
   result?: {
     assistantMessage?: string;
     summary?: string;
+    approvalRequest?: DeskNetsApprovalRequest;
+    booking?: {
+      title: string;
+      start: string;
+      end: string;
+      participantIds: string[];
+      facilityId: string;
+      emailNotificationConfigured: boolean;
+      verified: boolean;
+    };
     [key: string]: unknown;
   };
   [key: string]: unknown;

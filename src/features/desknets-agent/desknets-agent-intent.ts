@@ -4,8 +4,8 @@ export function isDeskNetsAgentRequest(message: string): boolean {
   if (!text) return false;
 
   const matched = [
-    /desknet'?s/i,
-    /\u30c7\u30b9\u30af\u30cd\u30c3\u30c4/i,
+    /desk[\s_-]*net(?:['’ʼ＇]?s)?/i,
+    /\u30c7\u30b9\u30af(?:\u30cd\u30c3\u30c4|\u30cd\u30c3\u30c8)/i,
     /(?:schedule|meeting|appointment|availability|calendar).*(?:find|check|book|add|available|candidate)/i,
     /(?:find|check|book|add|available|candidate).*(?:schedule|meeting|appointment|availability|calendar)/i,
     /\u7a7a\u304d\u6642\u9593|\u7a7a\u304d\u72b6\u6cc1|\u65e5\u7a0b\u8abf\u6574|\u4e88\u5b9a\u8ffd\u52a0/i,
@@ -29,8 +29,10 @@ export function isDeskNetsAgentFollowUpRequest(message: string): boolean {
 
   return [
     /\u5019\u88dc\s*\d+|\d+\s*\u756a/,
+    /\d{1,2}\s*(?:時|:)\s*\d{0,2}(?:\s*分)?\s*(?:-|―|ー|〜|~|から)\s*\d{1,2}\s*(?:時|:)\s*\d{0,2}(?:\s*分)?/,
+    /\d{1,2}\s*(?:時|:)\s*\d{0,2}(?:\s*分)?\s*(?:開始|スタート|から)/,
     /(?:\d+\s*\u5206|\d+\s*\u6642\u9593).*(?:\u5909\u66f4|\u306b\u3057\u3066|\u3067)/,
-    /(?:\u4f1a\u8b70\u5ba4|\u30eb\u30fc\u30e0).*(?:\u7a7a\u304d|\u5019\u88dc|\u5909\u66f4|\u306b\u3057\u3066)/,
+    /(?:\u4f1a\u8b70\u5ba4|\u5fdc\u63a5\u5ba4|\u30eb\u30fc\u30e0).*(?:\u7a7a\u304d|\u5019\u88dc|\u5909\u66f4|\u5909\u3048|\u66ff\u3048|\u304b\u3048|\u306b\u3057\u3066)/,
     // \u5019\u88dc ("\u5019\u88dc") + \u623b/\u3084\u3081/\u898b\u305b/\u8868\u793a/\u4e00\u89a7 ("\u5019\u88dc\u306b\u623b\u3057\u3066" etc.) \u2014 the user changed their mind about
     // a booking in progress and wants the previous candidate list again.
     /\u5019\u88dc.*(?:\u623b|\u3084\u3081|\u898b\u305b|\u8868\u793a|\u4e00\u89a7)|(?:\u623b|\u3084\u3081).*\u5019\u88dc/,
@@ -86,13 +88,43 @@ export function isAwaitingParticipantChoiceReply(messages: unknown[]): boolean {
   return isAwaitingReplyTo(messages, PARTICIPANT_CHOICE_QUESTION_MARKER);
 }
 
+// The router only decides whether the DeskNet's NL analyzer gets a chance to
+// inspect the message. It does not interpret the requested change itself.
+// Stop at the latest user turn so an old scheduling run cannot hijack a later,
+// unrelated conversation in the same chat thread.
+export function hasActiveDeskNetsTurn(messages: unknown[]): boolean {
+  if (!Array.isArray(messages)) return false;
+  const activeResponseMarker =
+    /日時・会議室・メール送信有無を直接指定|日付を開いて候補を確認|別の会議室を指定してください|指定した会議室.+埋まっています|"status"\s*:\s*"(?:awaiting_user_input|awaiting_approval)"/;
+  for (let index = messages.length - 1; index >= Math.max(0, messages.length - 6); index -= 1) {
+    const message: any = messages[index];
+    if (message?.role === "user") return false;
+    const content = typeof message?.content === "string" ? message.content : "";
+    const name = typeof message?.name === "string" ? message.name : "";
+    if (
+      activeResponseMarker.test(content) ||
+      (/desknets_schedule_agent/i.test(name) &&
+        /awaiting_user_input|awaiting_approval/.test(content))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function mentionsSchedulingField(message: string): boolean {
+  return /会議室|応接室|ミーティングルーム|参加者|出席者|日時|日付|時刻|開始|終了|所要時間|メール|件名|タイトル|候補|確定|登録|予約|キャンセル/.test(
+    message.normalize("NFKC"),
+  );
+}
+
 export function hasDeskNetsAgentContext(messages: unknown[]): boolean {
   if (!Array.isArray(messages)) return false;
 
   return messages.slice(-8).some((message: any) => {
     const content = typeof message?.content === "string" ? message.content : "";
     const name = typeof message?.name === "string" ? message.name : "";
-    return /desknets_schedule_agent|desknet'?s|\u30c7\u30b9\u30af\u30cd\u30c3\u30c4|\u4e88\u5b9a\u8ffd\u52a0\u753b\u9762/i.test(
+    return /desknets_schedule_agent|desk[\s_-]*net(?:['’ʼ＇]?s)?|\u30c7\u30b9\u30af(?:\u30cd\u30c3\u30c4|\u30cd\u30c3\u30c8)|\u4e88\u5b9a\u8ffd\u52a0\u753b\u9762|\u65e5\u4ed8\u3092\u958b\u3044\u3066\u5019\u88dc\u3092\u78ba\u8a8d|\u65e5\u6642\u30fb\u4f1a\u8b70\u5ba4\u30fb\u30e1\u30fc\u30eb\u9001\u4fe1\u6709\u7121\u3092\u76f4\u63a5\u6307\u5b9a/i.test(
       `${name}\n${content}`
     );
   });
@@ -106,6 +138,7 @@ export function shouldRouteToDeskNetsAgent(
     isDeskNetsAgentRequest(message) ||
     isAwaitingFacilityChoiceReply(history) ||
     isAwaitingParticipantChoiceReply(history) ||
+    (hasActiveDeskNetsTurn(history) && mentionsSchedulingField(message)) ||
     (isDeskNetsAgentFollowUpRequest(message) &&
       hasDeskNetsAgentContext(history))
   );
