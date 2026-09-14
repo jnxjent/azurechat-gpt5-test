@@ -2,6 +2,24 @@
 
 TestSite deploy pattern for this workspace.
 
+## 自動デプロイ方法（TestSite 専用）
+
+この方法では、Codex が Git Bash で各コマンドの結果を確認しながら TestSite 専用ブランチへ必要なコミットだけを push し、GitHub Actions の `workflow_dispatch` を CLI から起動・監視する。ブラウザーで Run workflow を押す操作は不要。**push だけではデプロイは始まらない**。本番リモート `origin`、本番ブランチ、本番 WebApp には push・設定変更・デプロイをしない。
+
+1. `git remote -v` で `testsite` が `jnxjent/azurechat-gpt5-test` を指すことを確認する。`git fetch testsite` 後、対象が `refs/remotes/testsite/testsite/fix-toggle-selfscope-20260323` であることを確認する。
+2. 作業ツリーが dirty な場合は、下記「通常作業ツリーがdirtyな場合の重複なし手順」に従い、TestSite 先端を起点に独立した worktree を作る。今回必要なファイルだけを載せ、テストとビルド、コミット差分を確認する。`git add .`、rebase、force-push は使わない。
+3. push 用 worktree の開始コミットと `refs/remotes/testsite/testsite/fix-toggle-selfscope-20260323` が一致することを確認し、今回のコミットだけを cherry-pick する。push 先は `git push testsite HEAD:testsite/fix-toggle-selfscope-20260323` のみ。
+4. push 後、次の Workflow を **TestSite リポジトリと同じブランチを明示して**起動する。`gh` がない環境では、同等の認証済み GitHub Actions API `workflow_dispatch` を使う。起動した Run の `head_sha` が push したコミットであることを確認する。
+
+   ```bash
+   gh workflow run azure-dev-validate.yml --repo jnxjent/azurechat-gpt5-test --ref testsite/fix-toggle-selfscope-20260323
+   ```
+
+5. `build` と `deploy` が成功し、対象 Azure WebApp が `azurechat-gpt5-test` であることを確認する。失敗時は原因を確認するまで Timer を再開しない。TestSite の Index は `dl_index_phase15_test` とする。
+
+本番上書き防止のため、Workflow の Azure App Service 名が `azurechat-gpt5-test` と異なる場合は、設定変更や ZIP 配置より前に失敗させる。GitHub Actions の実行履歴で過去に TestSite へ向いたことだけを根拠にせず、今回の実行でも確認する。
+この TestSite リポジトリの Workflow には `environment: Production` という従来の GitHub 環境名が残っている。これはデプロイ先の Azure WebApp 名ではない。Azure の書き込み先は `azurechat-gpt5-test` に固定し、実行前にリポジトリ・ブランチ・シークレットのアプリ名・Test 用 Search index を検査する。
+
 ## TestSiteから本番へPRで反映する手順
 
 TestSiteで動作確認できた変更を、本番リポジトリの`main`へPRで反映する場合の手順。

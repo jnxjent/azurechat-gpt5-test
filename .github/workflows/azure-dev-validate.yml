@@ -180,6 +180,18 @@ jobs:
       name: Production
 
     steps:
+      - name: Guard TestSite deployment target
+        env:
+          APP_NAME: ${{ secrets.AZURE_APP_SERVICE_NAME }}
+        run: |
+          set -eu
+          if [ "$GITHUB_REPOSITORY" != "jnxjent/azurechat-gpt5-test" ] ||
+             [ "$GITHUB_REF" != "refs/heads/testsite/fix-toggle-selfscope-20260323" ] ||
+             [ "$APP_NAME" != "azurechat-gpt5-test" ]; then
+            echo "Refusing deployment outside the approved TestSite repository, branch, or WebApp"
+            exit 1
+          fi
+
       - name: ⬇️ Download artifact from build job
         uses: actions/download-artifact@v4
         with:
@@ -194,8 +206,17 @@ jobs:
         uses: azure/CLI@v1
         with:
           inlineScript: |
-            APP_NAME=${{ secrets.AZURE_APP_SERVICE_NAME }}
+            APP_NAME=azurechat-gpt5-test
             RG=$(az webapp list --query "[?name=='$APP_NAME'].resourceGroup" --output tsv)
+            if [ -z "$RG" ]; then
+              echo "TestSite WebApp not found; refusing deployment"
+              exit 1
+            fi
+            INDEX_NAME=$(az webapp config appsettings list -n "$APP_NAME" -g "$RG" --query "[?name=='AZURE_SEARCH_INDEX_NAME'].value | [0]" --output tsv)
+            if [ "$INDEX_NAME" != "dl_index_phase15_test" ]; then
+              echo "TestSite Search index mismatch; refusing deployment"
+              exit 1
+            fi
 
             echo "Setting SCM_DO_BUILD_DURING_DEPLOYMENT=false"
             az webapp config appsettings set \
@@ -227,8 +248,9 @@ jobs:
                 SL_SYNC_TEMPORARY_LIMIT_MONTH=2026-09 \
                 SL_SYNC_TEMPORARY_MONTHLY_OCR_PAGE_LIMIT=631000 \
                 SL_SYNC_INITIAL_MONTHLY_OCR_PAGES=611000 \
-                SL_SYNC_MAX_FILE_OCR_PAGES=200 \
+                SL_SYNC_MAX_FILE_OCR_PAGES=500 \
                 SL_SYNC_MAX_FILE_ATTEMPTS=2 \
+                SL_SYNC_MAX_FILE_TOTAL_ATTEMPTS=2 \
                 SL_SYNC_PAUSE_AT=2026-10-01T00:00:00+09:00 \
               -o none
 
@@ -236,7 +258,7 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ secrets.AZURE_APP_SERVICE_NAME }}
+          app-name: azurechat-gpt5-test
           package: ${{ github.workspace }}/Nextjs-site.zip
 
       - name: 🧹 Cleanup
