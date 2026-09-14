@@ -216,6 +216,22 @@ jobs:
                 XDG_CACHE_HOME=/home/site/wwwroot/font-cache \
               -o none
 
+            # September 2026: shared Document Intelligence page budget.
+            # The seed is rounded above the 610,792 pages already processed.
+            az webapp config appsettings set \
+              -n $APP_NAME \
+              -g $RG \
+              --settings \
+                SL_SYNC_DAILY_OCR_PAGE_LIMIT=5000 \
+                SL_SYNC_MONTHLY_OCR_PAGE_LIMIT=100000 \
+                SL_SYNC_TEMPORARY_LIMIT_MONTH=2026-09 \
+                SL_SYNC_TEMPORARY_MONTHLY_OCR_PAGE_LIMIT=631000 \
+                SL_SYNC_INITIAL_MONTHLY_OCR_PAGES=611000 \
+                SL_SYNC_MAX_FILE_OCR_PAGES=200 \
+                SL_SYNC_MAX_FILE_ATTEMPTS=2 \
+                SL_SYNC_PAUSE_AT=2026-10-01T00:00:00+09:00 \
+              -o none
+
       - name: 🚀 Deploy to Azure Web App
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
