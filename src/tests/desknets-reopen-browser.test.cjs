@@ -5,19 +5,21 @@ const path = require('node:path');
 const ts = require('typescript');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 (async () => {
-  const browser=await chromium.launch({headless:true});
+  const liveUrl=process.env.HANDOFF_TEST_URL;
+  const browser=liveUrl ? await chromium.connectOverCDP('http://127.0.0.1:9222') : await chromium.launch({headless:true});
+  let page;
   try {
-    const context=await browser.newContext();
-    const page=await context.newPage();
+    const context=liveUrl ? browser.contexts()[0] : await browser.newContext();
+    page=await context.newPage();
     let handoffs=0;
     await context.route('https://handoff.test/**', route => {
       if(route.request().url().includes('/api/desknets-agent/')) {
         handoffs++;
-        return route.fulfill({contentType:'application/json',body:JSON.stringify({handoffUrl:"https://desknets.midac.jp/dneo/dneo.cgi?cmd=schindex#cmd=schaddtarget&date=20990918&enddate=20990918&starttime=1400&endtime=1500&id=186&id=5&id=6"})});
+        return route.fulfill({contentType:'application/json',body:JSON.stringify({handoffUrl:liveUrl ?? "https://desknets.midac.jp/dneo/dneo.cgi?cmd=schindex#cmd=schaddtarget&date=20990918&enddate=20990918&starttime=1400&endtime=1500&id=186&id=5&id=6"})});
       }
       return route.fulfill({contentType:'text/html',body:'<div id="root"></div>'});
     });
-    await context.route('https://desknets.midac.jp/**',route=>route.fulfill({contentType:'text/html',body:'Draft only'}));
+    if(!liveUrl) await context.route('https://desknets.midac.jp/**',route=>route.fulfill({contentType:'text/html',body:'Draft only'}));
     await page.goto('https://handoff.test/');
     await page.addScriptTag({path:path.join(path.dirname(require.resolve('react')),'umd/react.development.js')});
     await page.addScriptTag({path:path.join(path.dirname(require.resolve('react-dom')),'umd/react-dom.development.js')});
@@ -46,6 +48,20 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       const popup=await popupPromise;
       await popup.waitForURL('https://desknets.midac.jp/**');
       assert.match(popup.url(),/id=186&id=5&id=6/);
+      if(liveUrl) {
+        await popup.locator('.jsch-startdate:visible').waitFor({timeout:30000});
+        const hash=new URLSearchParams(new URL(liveUrl).hash.slice(1));
+        const date=hash.get('date');
+        assert.equal(await popup.locator('.jsch-startdate:visible').inputValue(),`${date.slice(0,4)}/${date.slice(4,6)}/${date.slice(6,8)}`);
+        for (const [index, field] of ['starttime','endtime'].entries()) {
+          const clock=hash.get(field);
+          assert.equal((await popup.locator('select.co-timepicker-hour:visible').nth(index).locator('option:checked').innerText()).trim(),`${Number(clock.slice(0,2))}時`);
+          assert.equal((await popup.locator('select.co-timepicker-minute:visible').nth(index).locator('option:checked').innerText()).trim(),`${Number(clock.slice(2,4))}分`);
+        }
+        const ids=await popup.locator('input[name="otherto"]').evaluateAll(es=>es.map(e=>e.value));
+        assert.deepEqual(ids.sort(),hash.getAll('id').sort());
+        console.log(`PASS: native DeskNets draft ${i+1}, correct date and all three participant IDs; Add not clicked.`);
+      }
       await popup.close();
       await button.waitFor({state:'visible'});
     }
@@ -53,5 +69,5 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.getByRole('button',{name:'議題をコピー'}).count(),0);
     assert.equal(await page.getByRole('button',{name:/実行側Edge/}).count(),0);
     console.log('PASS: actual button opens, closes and reopens a fresh draft tab; removed controls absent.');
-  } finally {await browser.close();}
+  } finally {if(page) await page.close({runBeforeUnload:false});await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
