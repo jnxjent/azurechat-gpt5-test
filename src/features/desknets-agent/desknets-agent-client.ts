@@ -213,6 +213,17 @@ export async function getDeskNetsAgentRun(
   }
 }
 
+export async function getDeskNetsHandoff(runId: string, chatThreadId: string): Promise<{handoffUrl?: string; message?: string}> {
+  if (!getAgentBaseUrl()) return {message:"DeskNet's Agent is not configured."};
+  try {
+    const response = await fetch(`${getAgentBaseUrl()}/browser-agent/runs/${encodeURIComponent(runId)}/handoff`, {
+      headers:await createAgentHeaders(chatThreadId),cache:"no-store",
+    });
+    const body=await response.json();
+    return response.ok && typeof body.handoffUrl === "string" ? {handoffUrl:body.handoffUrl} : {message:body.message ?? "引き渡しできません。候補を再作成してください。"};
+  } catch { return {message:"引き渡し先を取得できませんでした。再試行してください。"}; }
+}
+
 export async function approveDeskNetsAgentRun(
   runId: string,
   chatThreadId: string,

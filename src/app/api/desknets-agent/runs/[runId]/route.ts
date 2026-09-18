@@ -1,6 +1,7 @@
 import {
   approveDeskNetsAgentRun,
   getDeskNetsAgentRun,
+  getDeskNetsHandoff,
 } from "@/features/desknets-agent/desknets-agent-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -16,6 +17,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
   const chatThreadId = request.nextUrl.searchParams.get("chatThreadId")?.trim() ?? "";
   if (!validIdentifier(context.params.runId) || !validIdentifier(chatThreadId)) {
     return NextResponse.json({ status: "failed", message: "Invalid run or chat thread ID." }, { status: 400 });
+  }
+  if (request.nextUrl.searchParams.get("handoff") === "1") {
+    const result = await getDeskNetsHandoff(context.params.runId, chatThreadId);
+    return NextResponse.json(result, {status:result.handoffUrl ? 200 : 409,headers:{"Cache-Control":"no-store"}});
   }
   const run = await getDeskNetsAgentRun(context.params.runId, chatThreadId);
   return NextResponse.json(run, { headers: { "Cache-Control": "no-store" } });

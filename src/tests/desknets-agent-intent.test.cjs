@@ -20,6 +20,13 @@ function loadIntentModule() {
 }
 
 const { shouldRouteToDeskNetsAgent } = loadIntentModule();
+test("bare candidate numbers continue a scheduling turn but not an unrelated turn", () => {
+  const history=[{role:"tool",name:"desknets_schedule_agent",content:"candidates"}];
+  for(const message of ["では、１で","では、1で","1で","じゃあ、2で","3番で"]) {
+    assert.equal(shouldRouteToDeskNetsAgent(message,history),true,message);
+    assert.equal(shouldRouteToDeskNetsAgent(message,[{role:"user",content:"売上を調べて"}]),false,message);
+  }
+});
 const recentDeskNetsHistory = [
   { role: "assistant", content: "DeskNet'sで候補を確認しました。" },
 ];
