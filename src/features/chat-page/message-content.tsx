@@ -1,4 +1,5 @@
 import { Markdown } from "@/features/ui/markdown/markdown";
+import { DeskNetsApprovalCard } from "@/features/desknets-agent/desknets-approval-card";
 import { normalizePhoneForTel, splitTextWithPhones } from "@/lib/linkifyPhone";
 import { Download, FunctionSquare } from "lucide-react";
 import React, { useEffect, useRef } from "react";
@@ -481,6 +482,7 @@ const MessageContent: React.FC<MessageContentProps> = ({ message }) => {
 
     return (
       <div className="py-3 space-y-2">
+        <DeskNetsApprovalCard toolResult={toolObj} />
         {validDownloads.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {validDownloads.map((d, idx) => (

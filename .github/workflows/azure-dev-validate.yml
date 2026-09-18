@@ -24,6 +24,7 @@ jobs:
         run: |
           cd ./src
           npm ci
+          node --test tests/desknets-approval-render.test.cjs tests/desknets-agent-intent.test.cjs
           npm run build
           cd ..
 
