@@ -25,9 +25,9 @@ function formatToolResult(run: DeskNetsAgentRunResponse, chatThreadId: string) {
     runId: run.id || run.runId,
     chatThreadId,
     message,
-    ...(run.result?.approvalRequest === undefined
+    ...((run.result?.approvalRequest ?? run.result?.manualActionRequest) === undefined
       ? {}
-      : { approvalRequest: run.result.approvalRequest }),
+      : { approvalRequest: run.result?.approvalRequest ?? run.result?.manualActionRequest }),
     ...(run.result?.booking === undefined
       ? {}
       : { booking: run.result.booking }),

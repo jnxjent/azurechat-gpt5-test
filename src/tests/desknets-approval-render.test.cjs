@@ -61,11 +61,10 @@ function render(role, value) {
 for (const role of ["tool", "function"]) {
   test(`${role} result renders the real approval card outside the raw tool output`, () => {
     const html = render(role, approval);
-    assert.match(html, /このPCのDeskNet(?:&#x27;|&#39;|')sで確認（日時・参加者）/);
-    assert.match(html, /実行側Edgeの予定追加画面を表示/);
-    assert.match(html, /議題をコピー/);
+    assert.match(html, /desknet(?:&#x27;|&#39;|')sを開く/);
+    assert.doesNotMatch(html, /実行側Edge|議題をコピー|このPCへの引き渡し|Alt \+ Tab/);
     assert.match(html, /参加者A、参加者B、参加者C/);
-    assert.ok(html.indexOf("議題をコピー") < html.indexOf("raw tool output"));
+    assert.ok(html.indexOf("sを開く") < html.indexOf("raw tool output"));
   });
 }
 test("unrelated, malformed and candidate-only results do not render approval buttons", () => {
