@@ -18,6 +18,7 @@ export type DeskNetsAgentRunRequest = {
   site: "desknets";
   mode: DeskNetsAgentMode;
   prompt: string;
+  conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
   structuredCommand?: DeskNetsStructuredCommand;
 };
 
@@ -30,7 +31,13 @@ export type DeskNetsApprovalRequest = {
   emailNotificationWillBeSent: boolean;
 };
 
+export type DeskNetsManualActionRequest = DeskNetsApprovalRequest & {
+  selfNotificationSuppressed: false;
+};
+
 export type DeskNetsAgentRunResponse = {
+  intentSource?: string;
+  task?: { type: string };
   id?: string;
   runId?: string;
   status: DeskNetsAgentRunStatus | string;
@@ -44,6 +51,7 @@ export type DeskNetsAgentRunResponse = {
     assistantMessage?: string;
     summary?: string;
     approvalRequest?: DeskNetsApprovalRequest;
+    manualActionRequest?: DeskNetsManualActionRequest;
     booking?: {
       title: string;
       start: string;

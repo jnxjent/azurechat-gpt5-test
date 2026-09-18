@@ -116,7 +116,8 @@ async function pollDeskNetsAgentRun(
 export async function runDeskNetsAgent(
   prompt: string,
   chatThreadId: string,
-  structuredCommand?: DeskNetsStructuredCommand
+  structuredCommand?: DeskNetsStructuredCommand,
+  conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>,
 ): Promise<DeskNetsAgentRunResponse> {
   const baseUrl = getAgentBaseUrl();
   if (!baseUrl) {
@@ -139,6 +140,7 @@ export async function runDeskNetsAgent(
     site: "desknets",
     mode: "read",
     prompt,
+    conversationHistory,
     ...(structuredCommand === undefined ? {} : { structuredCommand }),
   };
 
@@ -147,6 +149,7 @@ export async function runDeskNetsAgent(
       chatThreadId,
       baseUrl,
       structuredAction: structuredCommand?.action ?? null,
+      structuredActionIsHint: true,
       structuredFacility: structuredCommand?.facility ?? null,
     });
     const response = await fetch(`${baseUrl}/browser-agent/runs`, {
@@ -169,7 +172,17 @@ export async function runDeskNetsAgent(
       };
     }
 
-    return await pollDeskNetsAgentRun(body, headers);
+    const completed = await pollDeskNetsAgentRun(body, headers);
+    console.log("[DeskNetsAgent] API result", {
+      chatThreadId,
+      runId: completed.id || completed.runId,
+      status: completed.status,
+      resolvedAction: completed.task?.type,
+      intentSource: completed.intentSource,
+      hasApprovalCard: completed.result?.approvalRequest !== undefined,
+      hasError: Boolean(completed.error),
+    });
+    return completed;
   } catch (error) {
     console.error("[DeskNetsAgent] request failed:", error);
     return {

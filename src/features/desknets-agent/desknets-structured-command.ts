@@ -64,13 +64,27 @@ export const DESKNETS_STRUCTURED_COMMAND_SCHEMA: JSONSchema = {
     facility: {
       type: "object",
       properties: {
-        preferred: nullableString,
-        fallbackLocation: nullableString,
+        preferred: {
+          ...nullableString,
+          description:
+            "Exact preferred facility name, or only the location token for an any-room request. Example: for '有玉のどこかの会議室', use '有玉', never the whole phrase.",
+        },
+        fallbackLocation: {
+          ...nullableString,
+          description:
+            "Fallback location used only when a distinct preferred facility is unavailable. Do not duplicate preferred for a location-scoped any-room request.",
+        },
         fallbackType: {
           type: ["string", "null"],
           enum: ["meeting_room", "reception_room", "any", null],
+          description:
+            "Requested facility type. For 'どこかの会議室', use meeting_room; for 'どこかの応接室', use reception_room.",
         },
-        anyAvailable: { type: "boolean" },
+        anyAvailable: {
+          type: "boolean",
+          description:
+            "True when the user permits any available facility within the stated location or fallback scope.",
+        },
       },
       required: [
         "preferred",

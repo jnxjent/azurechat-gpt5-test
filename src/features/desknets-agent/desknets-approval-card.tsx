@@ -40,6 +40,20 @@ const parseApprovalToolResult = (
   };
 };
 
+const isManualConfirmationReady = (run: unknown): run is {
+  status: "awaiting_user_input";
+  result: { assistantMessage?: string; manualActionRequest: unknown };
+} => {
+  if (typeof run !== "object" || run === null) return false;
+  const candidate = run as Record<string, unknown>;
+  if (candidate.status !== "awaiting_user_input") return false;
+  if (typeof candidate.result !== "object" || candidate.result === null) return false;
+  return (candidate.result as Record<string, unknown>).manualActionRequest !== undefined;
+};
+
+const MANUAL_CONFIRMATION_MESSAGE =
+  "DeskNet'sの予定追加画面を表示しました。内容を確認し、DeskNet's上の「追加」を手動で押してください。";
+
 export const DeskNetsApprovalCard = ({
   toolResult,
 }: {
@@ -57,7 +71,7 @@ const ApprovalCard = ({
   approvalRequest: approval,
 }: DeskNetsApprovalToolResult) => {
   const [state, setState] = useState<
-    "idle" | "submitting" | "completed" | "failed"
+    "idle" | "submitting" | "ready" | "completed" | "failed"
   >("idle");
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState(approval.title || "打ち合わせ");
@@ -73,7 +87,10 @@ const ApprovalCard = ({
         );
         const run = await response.json();
         if (cancelled) return;
-        if (run.status === "completed") {
+        if (isManualConfirmationReady(run)) {
+          setState("ready");
+          setMessage(run.result.assistantMessage ?? MANUAL_CONFIRMATION_MESSAGE);
+        } else if (run.status === "completed") {
           setState("completed");
           setMessage(
             run.result?.assistantMessage ??
@@ -98,7 +115,7 @@ const ApprovalCard = ({
   }, [chatThreadId, runId]);
 
   const approve = async () => {
-    if (state !== "idle" && state !== "failed") return;
+    if (state !== "idle" && state !== "failed" && state !== "ready") return;
     setState("submitting");
     setMessage("");
     try {
@@ -111,6 +128,11 @@ const ApprovalCard = ({
         },
       );
       const run = await response.json();
+      if (response.ok && isManualConfirmationReady(run)) {
+        setState("ready");
+        setMessage(run.result.assistantMessage ?? MANUAL_CONFIRMATION_MESSAGE);
+        return;
+      }
       if (response.ok && run.status === "completed") {
         setState("completed");
         setMessage(
@@ -177,8 +199,8 @@ const ApprovalCard = ({
               <Loader2 size={16} className="animate-spin" />
             )}
             {state === "submitting"
-              ? "登録しています…"
-              : "確定してDeskNet'sに登録"}
+              ? "DeskNet'sを表示しています…"
+              : state === "ready" ? "DeskNet'sの予定追加画面を再表示" : "DeskNet'sの予定追加画面を表示"}
           </button>
           <button
             type="button"
@@ -193,8 +215,11 @@ const ApprovalCard = ({
       {state === "failed" && (
         <p className="text-sm text-destructive">{message}</p>
       )}
+      {state === "ready" && (
+        <p className="text-sm text-emerald-600">{message}</p>
+      )}
       <p className="text-xs text-muted-foreground">
-        「確定」を押すまでDeskNet&apos;sには登録されません。
+        ボタンを押すと入力済みの予定追加画面を表示します。DeskNet&apos;s上の「追加」を手動で押すまで登録されません。
       </p>
     </div>
   );

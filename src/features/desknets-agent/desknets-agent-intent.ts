@@ -14,12 +14,6 @@ export function isDeskNetsAgentRequest(message: string): boolean {
     /\u53c2\u52a0\u8005.*(?:\u4e88\u5b9a|\u7a7a\u304d|\u65e5\u7a0b)/i,
   ].some((pattern) => pattern.test(text));
 
-  if (process.env.NODE_ENV !== "production") {
-    console.log("[DeskNetsAgent] intent check", {
-      matched,
-      messagePreview: text.slice(0, 80),
-    });
-  }
   return matched;
 }
 
@@ -28,6 +22,9 @@ export function isDeskNetsAgentFollowUpRequest(message: string): boolean {
   if (!text) return false;
 
   return [
+    /^(?:では|それでは|じゃあ)?\s*(?:\d+\s*分(?:間)?|\d+\s*時間(?:半|\s*\d+\s*分)?|半時間)(?:で|にして|お願いします)?[。.!！]?$/,
+    /(?:午前|午後)?\s*\d{1,2}\s*(?:時(?:半|\s*\d{1,2}分)?|:\d{2})(?:から|で|開始|スタート)?/,
+    /^(?:送信で|送信する|送信しない|それで|その時間で|その条件で|カードを出して|確認カードを出して)[。.!！]?$/,
     /\u5019\u88dc\s*\d+|\d+\s*\u756a/,
     /\d{1,2}\s*(?:時|:)\s*\d{0,2}(?:\s*分)?\s*(?:-|―|ー|〜|~|から)\s*\d{1,2}\s*(?:時|:)\s*\d{0,2}(?:\s*分)?/,
     /\d{1,2}\s*(?:時|:)\s*\d{0,2}(?:\s*分)?\s*(?:開始|スタート|から)/,
@@ -42,7 +39,7 @@ export function isDeskNetsAgentFollowUpRequest(message: string): boolean {
   ].some((pattern) => pattern.test(text));
 }
 
-// Scans the last few messages backward for `marker`, but stops (returns
+// Scans the current response backward for `marker`, but stops (returns
 // false) the moment it hits a user-role message first — that means a user
 // reply has already come and gone since the question was asked, so the
 // question is stale/answered and must not keep triggering routing on every
@@ -52,9 +49,8 @@ export function isDeskNetsAgentFollowUpRequest(message: string): boolean {
 function isAwaitingReplyTo(messages: unknown[], marker: string): boolean {
   if (!Array.isArray(messages)) return false;
 
-  const recent = messages.slice(-4);
-  for (let index = recent.length - 1; index >= 0; index -= 1) {
-    const message: any = recent[index];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as SchedulingHistoryMessage | undefined;
     const role = typeof message?.role === "string" ? message.role : "";
     if (role === "user") return false;
     const content = typeof message?.content === "string" ? message.content : "";
@@ -96,8 +92,8 @@ export function hasActiveDeskNetsTurn(messages: unknown[]): boolean {
   if (!Array.isArray(messages)) return false;
   const activeResponseMarker =
     /日時・会議室・メール送信有無を直接指定|日付を開いて候補を確認|別の会議室を指定してください|指定した会議室.+埋まっています|"status"\s*:\s*"(?:awaiting_user_input|awaiting_approval)"/;
-  for (let index = messages.length - 1; index >= Math.max(0, messages.length - 6); index -= 1) {
-    const message: any = messages[index];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as SchedulingHistoryMessage | undefined;
     if (message?.role === "user") return false;
     const content = typeof message?.content === "string" ? message.content : "";
     const name = typeof message?.name === "string" ? message.name : "";
@@ -118,13 +114,16 @@ function mentionsSchedulingField(message: string): boolean {
   );
 }
 
+type SchedulingHistoryMessage = { role?: unknown; content?: unknown; name?: unknown };
+
 export function hasDeskNetsAgentContext(messages: unknown[]): boolean {
   if (!Array.isArray(messages)) return false;
 
-  return messages.slice(-8).some((message: any) => {
+  return messages.slice(-8).some((entry) => {
+    const message = entry as SchedulingHistoryMessage | undefined;
     const content = typeof message?.content === "string" ? message.content : "";
     const name = typeof message?.name === "string" ? message.name : "";
-    return /desknets_schedule_agent|desk[\s_-]*net(?:['’ʼ＇]?s)?|\u30c7\u30b9\u30af(?:\u30cd\u30c3\u30c4|\u30cd\u30c3\u30c8)|\u4e88\u5b9a\u8ffd\u52a0\u753b\u9762|\u65e5\u4ed8\u3092\u958b\u3044\u3066\u5019\u88dc\u3092\u78ba\u8a8d|\u65e5\u6642\u30fb\u4f1a\u8b70\u5ba4\u30fb\u30e1\u30fc\u30eb\u9001\u4fe1\u6709\u7121\u3092\u76f4\u63a5\u6307\u5b9a/i.test(
+    return /desknets_schedule_agent|候補は開始時刻順|打ち合わせを設定可能|desk[\s_-]*net(?:['’ʼ＇]?s)?|\u30c7\u30b9\u30af(?:\u30cd\u30c3\u30c4|\u30cd\u30c3\u30c8)|\u4e88\u5b9a\u8ffd\u52a0\u753b\u9762|\u65e5\u4ed8\u3092\u958b\u3044\u3066\u5019\u88dc\u3092\u78ba\u8a8d|\u65e5\u6642\u30fb\u4f1a\u8b70\u5ba4\u30fb\u30e1\u30fc\u30eb\u9001\u4fe1\u6709\u7121\u3092\u76f4\u63a5\u6307\u5b9a/i.test(
       `${name}\n${content}`
     );
   });
@@ -139,7 +138,24 @@ export function shouldRouteToDeskNetsAgent(
     isAwaitingFacilityChoiceReply(history) ||
     isAwaitingParticipantChoiceReply(history) ||
     (hasActiveDeskNetsTurn(history) && mentionsSchedulingField(message)) ||
-    (isDeskNetsAgentFollowUpRequest(message) &&
-      hasDeskNetsAgentContext(history))
+    (hasContinuousSchedulingContext(history) &&
+      (isDeskNetsAgentFollowUpRequest(message) || mentionsSchedulingField(message)))
   );
+}
+
+// Walk back over scheduling replies, not an arbitrary number of messages.
+// A topic change ends the chain; a clarification such as "60分" does not.
+export function hasContinuousSchedulingContext(history: unknown[]): boolean {
+  if (!Array.isArray(history)) return false;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index] as SchedulingHistoryMessage | undefined;
+    const content = typeof message?.content === "string" ? message.content : "";
+    if (message?.role === "user") {
+      if (isDeskNetsAgentRequest(content)) return true;
+      if (!isDeskNetsAgentFollowUpRequest(content) && !mentionsSchedulingField(content)) return false;
+    } else if (hasDeskNetsAgentContext([message])) {
+      return true;
+    }
+  }
+  return false;
 }

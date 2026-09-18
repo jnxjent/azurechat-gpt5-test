@@ -20,6 +20,7 @@ function formatToolResult(run: DeskNetsAgentRunResponse, chatThreadId: string) {
     "DeskNet's Agentの処理が完了しました。";
 
   return {
+    integration: "desknets_schedule_agent",
     status: run.status,
     runId: run.id || run.runId,
     chatThreadId,
@@ -35,14 +36,19 @@ function formatToolResult(run: DeskNetsAgentRunResponse, chatThreadId: string) {
 
 export function createDeskNetsAgentTool(
   chatThreadId: string,
-  userPrompt: string
+  userPrompt: string,
+  history: unknown[] = [],
 ): RunnableToolFunction<DeskNetsToolArguments> {
   return {
     type: "function",
     function: {
       name: "desknets_schedule_agent",
       description:
-        "DeskNet'sの予定調整を行う。最新のユーザー発言を構造化すること。会議室変更ではpreferredを第一希望にする。「空いていなければ」「埋まっていれば」「予約済みなら」「だめなら」などの代替条件があれば、その場所をfallbackLocation、会議室・応接室の種別をfallbackType、どこでもよい場合をanyAvailable=trueにする。明示されていない値はnullまたは空配列にし、推測しない。最終登録は別の確認操作で行う。",
+        "最短の依頼では、ツールが返した開始時刻順の最大5候補を表示し、先頭の＜最短＞を必ず残す。自動で候補1を選択せず、ユーザーが後の日時を選ぶこともできるようにする。" +
+        "候補を回答するときはツール出力の番号と日時の対応をそのまま表示する。候補番号を省略・付け替えしない。『では、1で』は表示済みの候補1の選択であり、日付の1日や所要時間1分ではない。" +
+        "『アクトの別会議室で』『では同じ場所の他の部屋で』は直前の会議日時・参加者を維持した会議室変更。action=change_facility、facility.preferred=場所名（例:アクト）、anyAvailable=true、fallbackType=meeting_room。『別』は直前の部屋を除く意味。場所が発言や履歴で明らかなら聞き直さない。" +
+        "同一スレッドの予定調整を継続する。日時・参加者・会議時間は履歴でユーザーが指定済みの値を引き継ぎ、最新の変更だけ上書きする。『16時開始で』には保存済み会議時間を使用し、時間を聞き直さない。開始日時の次に『60分』と答えた場合はselect_timeで既出の日付・開始時刻とdurationMinutes=60を渡す。会議室省略時はAPIが個人・部署の優先順位で選択するので指定を要求しない。メールと本人通知は既定ON。候補の選択・変更は必ずこのツールを実行し、OutlookやTeamsで手動登録するよう誘導しない。カードはapprovalRequestから表示され、カードのボタンは入力済みのDeskNet's予定追加画面を表示する。最終登録はユーザーがDeskNet's上の「追加」を手動で押す。" +
+"DeskNet'sの予定調整を行う。スレッド内で指定済みの条件に最新のユーザー発言を反映して構造化すること。会議室変更ではpreferredを第一希望にする。「有玉のどこかの会議室」「有玉で空いている会議室」のような場所内の任意指定は、preferredに場所名だけ（例: 有玉）、fallbackTypeにmeeting_room、anyAvailable=trueを設定し、文章全体を設備名にしない。「空いていなければ」「埋まっていれば」「予約済みなら」「だめなら」など、第一希望とは別の代替条件がある場合だけ、その場所をfallbackLocationへ設定する。応接室ならfallbackType=reception_room、設備種別を問わなければanyを使う。スレッド内でも明示されていない値はnullまたは空配列にし、推測しない。最終登録は別の確認操作で行う。",
       parameters: DESKNETS_STRUCTURED_COMMAND_SCHEMA,
       parse: parseDeskNetsStructuredCommand,
       function: async (args: DeskNetsToolArguments) => {
@@ -55,7 +61,15 @@ export function createDeskNetsAgentTool(
 
         // Preserve the exact message as a deterministic fallback. The Agent API
         // validates the model-generated command before using any structured field.
-        const run = await runDeskNetsAgent(userPrompt, chatThreadId, args);
+        let remainingCharacters = 40000;
+        const conversationHistory = history.slice().reverse().flatMap((entry) => {
+          const message = entry as { role?: string; content?: unknown };
+          if (remainingCharacters <= 0 || (message?.role !== "user" && message?.role !== "assistant") || typeof message.content !== "string") return [];
+          const content = message.content.slice(0, Math.min(12000, remainingCharacters));
+          remainingCharacters -= content.length;
+          return [{ role: message.role as "user" | "assistant", content }];
+        }).slice(0, 100).reverse();
+        const run = await runDeskNetsAgent(userPrompt, chatThreadId, args, conversationHistory);
         // Do not expose or persist the full browser run, screenshots, participant
         // identifiers, or facility inventory in the normal chat transcript.
         return formatToolResult(run, chatThreadId);
