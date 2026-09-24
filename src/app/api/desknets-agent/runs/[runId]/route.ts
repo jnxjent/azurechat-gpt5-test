@@ -1,7 +1,9 @@
 import {
   approveDeskNetsAgentRun,
+  createDeskNetsWebMeeting,
   getDeskNetsAgentRun,
   getDeskNetsHandoff,
+  getDeskNetsWebMeeting,
 } from "@/features/desknets-agent/desknets-agent-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,6 +19,13 @@ export async function GET(request: NextRequest, context: RouteContext) {
   const chatThreadId = request.nextUrl.searchParams.get("chatThreadId")?.trim() ?? "";
   if (!validIdentifier(context.params.runId) || !validIdentifier(chatThreadId)) {
     return NextResponse.json({ status: "failed", message: "Invalid run or chat thread ID." }, { status: 400 });
+  }
+  if (request.nextUrl.searchParams.get("webMeeting") === "1") {
+    const view = await getDeskNetsWebMeeting(context.params.runId, chatThreadId);
+    return NextResponse.json(view, {
+      status: view.message ? 409 : 200,
+      headers: { "Cache-Control": "no-store" },
+    });
   }
   if (request.nextUrl.searchParams.get("handoff") === "1") {
     const result = await getDeskNetsHandoff(context.params.runId, chatThreadId);
@@ -37,12 +46,24 @@ export async function POST(request: NextRequest, context: RouteContext) {
     "chatThreadId" in body && typeof body.chatThreadId === "string"
     ? body.chatThreadId.trim()
     : "";
+  const action = typeof body === "object" && body !== null &&
+    "action" in body && typeof body.action === "string"
+    ? body.action
+    : "";
   const title = typeof body === "object" && body !== null &&
     "title" in body && typeof body.title === "string"
     ? body.title.normalize("NFKC").trim()
     : "";
   if (!validIdentifier(context.params.runId) || !validIdentifier(chatThreadId)) {
     return NextResponse.json({ status: "failed", message: "Invalid run or chat thread ID." }, { status: 400 });
+  }
+  if (action === "create-web-meeting") {
+    // 明示的な「Teams会議を作成」操作だけがここへ来る。コピー操作はこの経路を通らない。
+    const result = await createDeskNetsWebMeeting(context.params.runId, chatThreadId, request);
+    return NextResponse.json(result.view ?? { message: result.message }, {
+      status: result.view ? 200 : 409,
+      headers: { "Cache-Control": "no-store" },
+    });
   }
   if (title.length < 1 || title.length > 100 || /[\r\n\t]/.test(title)) {
     return NextResponse.json({ status: "failed", message: "議題は1～100文字の1行で入力してください。" }, { status: 400 });

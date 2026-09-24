@@ -1,6 +1,8 @@
 import "server-only";
 import { fetchDeskNetsAgent, deskNetsTransportMessage } from "./desknets-agent-transport";
 
+import { getToken } from "next-auth/jwt";
+import type { NextRequest } from "next/server";
 import { userHashedId, userSession } from "@/features/auth-page/helpers";
 import type {
   DeskNetsAgentRunRequest,
@@ -223,6 +225,136 @@ export async function getDeskNetsHandoff(runId: string, chatThreadId: string): P
     const body=await response.json();
     return response.ok && typeof body.handoffUrl === "string" ? {handoffUrl:body.handoffUrl} : {message:body.message ?? "引き渡しできません。候補を再作成してください。"};
   } catch { return {message:"引き渡し先を取得できませんでした。再試行してください。"}; }
+}
+
+/**
+ * Teams WEB会議の状態と発行。
+ *
+ * 主催者は常に操作者本人。代理主催（秘書が上司名義で作成）は未対応で、
+ * 依頼が上司名義でも本人名義へ勝手に置き換えない。
+ * アクセストークンはサーバー側のセッションからのみ取り、ブラウザーへは返さない。
+ */
+export type DeskNetsWebMeetingView = {
+  requested: boolean;
+  status:
+    | "not_requested"
+    | "requested"
+    | "creating"
+    | "created_pending_details"
+    | "ready"
+    | "failed";
+  revision: number;
+  joinUrl?: string;
+  meetingId?: string;
+  passcode?: string;
+  passcodeAvailability?: "required" | "not_required" | "unavailable";
+  copyText?: string;
+  complete: boolean;
+  scheduleChanged: boolean;
+  notes: string[];
+  registered: false;
+  error?: string;
+  message?: string;
+};
+
+/**
+ * 委任アクセストークンはJWTから直接読む。NextAuthのセッションに載せるとブラウザーへ
+ * 渡るため、セッション経由では取らない。読み取った値はAgent APIへ渡すだけで、
+ * ログにも応答本文にも出さない。
+ */
+async function graphAccessToken(request: NextRequest): Promise<string | undefined> {
+  const token = (await getToken({ req: request }).catch(() => null)) as
+    | { accessToken?: string; accessTokenExpiresAt?: number }
+    | null;
+  if (!token?.accessToken) return undefined;
+  // 期限切れのトークンはGraphへ送らない。更新はサインインのセッション更新に任せる。
+  const expiresAt = token.accessTokenExpiresAt;
+  if (typeof expiresAt === "number" && Math.floor(Date.now() / 1000) >= expiresAt - 60) {
+    return undefined;
+  }
+  return token.accessToken;
+}
+
+/**
+ * 既定では無効。有効にするまでカードにWEB会議の欄を出さず、発行も受け付けない。
+ * このフラグはサインイン時に要求する委任スコープも決めるため、
+ * オフのまま発行だけ通すと権限不足で失敗する。Agent API側の同名フラグも必要。
+ */
+function isWebMeetingEnabled(): boolean {
+  return process.env.DESKNETS_WEB_MEETING_ENABLED === "true";
+}
+
+const WEB_MEETING_UNAVAILABLE: DeskNetsWebMeetingView = {
+  requested: false,
+  status: "not_requested",
+  revision: 0,
+  complete: false,
+  scheduleChanged: false,
+  notes: [],
+  registered: false,
+};
+
+export async function getDeskNetsWebMeeting(
+  runId: string,
+  chatThreadId: string,
+): Promise<DeskNetsWebMeetingView> {
+  if (!getAgentBaseUrl() || !isWebMeetingEnabled()) return WEB_MEETING_UNAVAILABLE;
+  try {
+    const response = await fetchDeskNetsAgent(
+      `${getAgentBaseUrl()}/browser-agent/runs/${encodeURIComponent(runId)}/web-meeting`,
+      { headers: await createAgentHeaders(chatThreadId), cache: "no-store" },
+    );
+    const body = await response.json();
+    return response.ok
+      ? (body as DeskNetsWebMeetingView)
+      : {
+          ...WEB_MEETING_UNAVAILABLE,
+          message: typeof body?.message === "string"
+            ? body.message
+            : "WEB会議情報を取得できませんでした。もう一度お試しください。",
+        };
+  } catch {
+    return {
+      ...WEB_MEETING_UNAVAILABLE,
+      message: "WEB会議情報を取得できませんでした。もう一度お試しください。",
+    };
+  }
+}
+
+export async function createDeskNetsWebMeeting(
+  runId: string,
+  chatThreadId: string,
+  request: NextRequest,
+): Promise<{ view?: DeskNetsWebMeetingView; message?: string }> {
+  if (!getAgentBaseUrl()) return { message: "DeskNet's Agent is not configured." };
+  if (!isWebMeetingEnabled()) {
+    return { message: "この環境ではTeams WEB会議の発行が有効になっていません。管理者に連絡してください。" };
+  }
+  const accessToken = await graphAccessToken(request);
+  if (!accessToken) {
+    return {
+      message:
+        "Microsoft 365への接続が確認できません。サインインし直してから、もう一度お試しください。",
+    };
+  }
+  try {
+    const headers = await createAgentHeaders(chatThreadId);
+    const response = await fetchDeskNetsAgent(
+      `${getAgentBaseUrl()}/browser-agent/runs/${encodeURIComponent(runId)}/web-meeting`,
+      {
+        method: "POST",
+        // Never logged and never returned to the browser.
+        headers: { ...headers, "x-graph-access-token": accessToken },
+        cache: "no-store",
+      },
+    );
+    const body = await response.json();
+    return response.ok
+      ? { view: body as DeskNetsWebMeetingView }
+      : { message: body?.message ?? "Teams会議を作成できませんでした。" };
+  } catch {
+    return { message: "Teams会議の作成要求を送れませんでした。再試行してください。" };
+  }
 }
 
 export async function approveDeskNetsAgentRun(

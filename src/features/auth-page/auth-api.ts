@@ -7,6 +7,11 @@ import type { Provider } from "next-auth/providers/index";  // ← 修正
 import { hashValue } from "@/features/auth-page/helpers";
 import { getEffectiveSlUserEmail, resolveSlAccess } from "@/lib/sl-dept";
 
+// Teams WEB会議の発行に必要な委任スコープ。既定では要求しない。
+// 追加すると全ユーザーのサインイン時に同意画面が変わるため、テナントの同意ポリシーと
+// 管理者同意を確認したうえで DESKNETS_WEB_MEETING_ENABLED=true にしてから有効化する。
+const WEB_MEETING_SCOPE = ["Calendars.ReadWrite", "OnlineMeetings.Read"];
+
 const AAD_SCOPE = [
   "openid",
   "profile",
@@ -14,6 +19,7 @@ const AAD_SCOPE = [
   "offline_access",
   "User.Read",
   "Files.ReadWrite",
+  ...(process.env.DESKNETS_WEB_MEETING_ENABLED === "true" ? WEB_MEETING_SCOPE : []),
 ].join(" ");
 
 function resolveLocalDevEmail(username?: string | null): string {
@@ -215,7 +221,9 @@ export const options: NextAuthOptions = {
         session.user.slRole = (token as any).slRole;
         session.user.slDept = (token as any).slDept;
       }
-      (session as any).accessToken = (token as any).accessToken;
+      // アクセストークンはセッションへ載せない。NextAuthのセッションは
+      // /api/auth/session や useSession() からブラウザーへ渡るため、載せると公開される。
+      // サーバー側で必要な箇所は next-auth/jwt の getToken でJWTから直接読む。
       (session as any).accessTokenExpiresAt = (token as any).accessTokenExpiresAt;
       (session as any).refreshError = (token as any).refreshError;
       return session;

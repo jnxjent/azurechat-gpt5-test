@@ -2,13 +2,35 @@
 
 import { chatStore } from "@/features/chat-page/chat-store";
 import { RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { DeskNetsApprovalRequest } from "./desknets-agent-types";
 
 type DeskNetsApprovalToolResult = {
   runId: string;
   chatThreadId: string;
   approvalRequest: DeskNetsApprovalRequest;
+};
+
+/**
+ * Teams WEB会議の状態。サーバーが組み立てた copyText をそのままコピーする。
+ * 保証できるのはコピーする文字列まで。貼り付け先のDeskNet's本文は別オリジンのため
+ * 読めず、既存本文が残ったか・二重に貼られていないかは検証できない。
+ */
+type WebMeetingView = {
+  requested: boolean;
+  status: string;
+  revision: number;
+  joinUrl?: string;
+  meetingId?: string;
+  passcode?: string;
+  passcodeAvailability?: "required" | "not_required" | "unavailable";
+  copyText?: string;
+  complete: boolean;
+  /** 保存済みの会議と、いま確定している日時・件名がずれている。 */
+  scheduleChanged: boolean;
+  notes: string[];
+  registered: false;
+  error?: string;
 };
 
 const isApprovalRequest = (value: unknown): value is DeskNetsApprovalRequest => {
@@ -40,6 +62,13 @@ const parseApprovalToolResult = (
   };
 };
 
+// 「不要」と「取得失敗」を同じ表示にしない。
+const passcodeLabel = (view: WebMeetingView): string => {
+  if (view.passcodeAvailability === "required") return view.passcode ?? "取得できませんでした";
+  if (view.passcodeAvailability === "not_required") return "不要";
+  return "取得できませんでした";
+};
+
 export const DeskNetsApprovalCard = ({
   toolResult,
 }: {
@@ -58,6 +87,12 @@ const ApprovalCard = ({
 }: DeskNetsApprovalToolResult) => {
   const [localMessage, setLocalMessage] = useState("");
   const [openingLocal, setOpeningLocal] = useState(false);
+  const [webMeeting, setWebMeeting] = useState<WebMeetingView | null>(null);
+  const [webMeetingMessage, setWebMeetingMessage] = useState("");
+  const [creatingWebMeeting, setCreatingWebMeeting] = useState(false);
+  const [copyMessage, setCopyMessage] = useState("");
+  const [manualCopyText, setManualCopyText] = useState("");
+
   const openOnThisPC = async () => {
     if (openingLocal) return;
     setLocalMessage("");
@@ -81,6 +116,84 @@ const ApprovalCard = ({
     } finally {setOpeningLocal(false);}
   };
 
+  const loadWebMeeting = useCallback(async (): Promise<WebMeetingView | undefined> => {
+    try {
+      const response = await fetch(
+        `/api/desknets-agent/runs/${encodeURIComponent(runId)}?chatThreadId=${encodeURIComponent(chatThreadId)}&webMeeting=1`,
+        {cache:"no-store"},
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        setWebMeeting(null);
+        setWebMeetingMessage(body?.message ?? "WEB会議情報を取得できませんでした。もう一度お試しください。");
+        return undefined;
+      }
+      const view = (await response.json()) as WebMeetingView;
+      setWebMeeting(view);
+      return view;
+    } catch {
+      setWebMeeting(null);
+      setWebMeetingMessage("WEB会議情報を取得できませんでした。もう一度お試しください。");
+      return undefined;
+    }
+  }, [runId, chatThreadId]);
+
+  useEffect(() => { void loadWebMeeting(); }, [loadWebMeeting]);
+
+  // 明示的な発行操作。候補選択・カード再表示・コピーからは呼ばれない。
+  // 作成済みなら作り直さず、未取得の情報の取得だけを再開する。
+  const createWebMeeting = async () => {
+    if (creatingWebMeeting) return;
+    setCreatingWebMeeting(true);
+    setWebMeetingMessage("");
+    setCopyMessage("");
+    setManualCopyText("");
+    try {
+      const response = await fetch(`/api/desknets-agent/runs/${encodeURIComponent(runId)}`, {
+        method: "POST",
+        headers: {"content-type": "application/json"},
+        body: JSON.stringify({chatThreadId, action: "create-web-meeting"}),
+        cache: "no-store",
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.message ?? "Teams会議を作成できませんでした。");
+      setWebMeeting(body as WebMeetingView);
+    } catch (error) {
+      setWebMeetingMessage(error instanceof Error ? error.message : "Teams会議を作成できませんでした。");
+    } finally {
+      setCreatingWebMeeting(false);
+    }
+  };
+
+  const copyWebMeeting = async () => {
+    setCopyMessage("");
+    setWebMeetingMessage("");
+    setManualCopyText("");
+    // 古いカードから古い参加URL・パスコードをコピーさせない。
+    const latest = await loadWebMeeting();
+    if (latest === undefined) return;
+    if (latest.scheduleChanged) {
+      setWebMeetingMessage("先にTeams会議の日時を更新してからコピーしてください。");
+      return;
+    }
+    if (!latest.copyText) {
+      setWebMeetingMessage("WEB会議情報を取得できませんでした。もう一度お試しください。");
+      return;
+    }
+    if (webMeeting !== null && latest.revision !== webMeeting.revision) {
+      setWebMeetingMessage("会議が更新されました。表示を更新したので、新しい内容を確認してからコピーしてください。");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(latest.copyText);
+      // 成功したときだけ成功と表示する。
+      setCopyMessage("コピーしました。DeskNet'sの「内容」欄の末尾に貼り付けてください。");
+    } catch {
+      setManualCopyText(latest.copyText);
+      setWebMeetingMessage("コピーできませんでした。下の内容を選択して手動でコピーしてください。");
+    }
+  };
+
   const dateTime = (value: string) =>
     new Intl.DateTimeFormat("ja-JP", {
       timeZone: "Asia/Tokyo",
@@ -90,11 +203,14 @@ const ApprovalCard = ({
       minute: "2-digit",
     }).format(new Date(value));
 
+  const showWebMeeting =
+    webMeeting !== null && (webMeeting.requested || webMeeting.joinUrl !== undefined);
+
   return (
     <div className="space-y-3 rounded-lg border-2 border-amber-500/70 bg-amber-500/10 p-4">
       <div className="font-semibold">DeskNet&apos;s 予定内容の最終確認</div>
       <dl className="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-sm">
-        <dt className="text-muted-foreground">議題</dt>
+        <dt className="text-muted-foreground">件名</dt>
         <dd>{approval.title}</dd>
         <dt className="text-muted-foreground">日時</dt>
         <dd>{dateTime(approval.start)} ～ {dateTime(approval.end)}</dd>
@@ -105,6 +221,71 @@ const ApprovalCard = ({
         <dt className="text-muted-foreground">メール</dt>
         <dd>{approval.emailNotificationWillBeSent ? "送信する" : "送信しない"}</dd>
       </dl>
+      {showWebMeeting && webMeeting !== null && (
+        <div className="space-y-2 rounded-md border bg-background/60 p-3 text-sm">
+          <div className="font-semibold">Teams WEB会議</div>
+          {webMeeting.joinUrl === undefined ? (
+            <>
+              <p className="text-muted-foreground">
+                本人名義でTeams会議を作成し、参加情報を表示します。Teams側の招待メールは送信しません。
+                主催者は操作しているご本人です。他の方の名義での作成には対応していません。
+              </p>
+              <button type="button" onClick={() => void createWebMeeting()} disabled={creatingWebMeeting}
+                className="rounded-md bg-sky-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                {creatingWebMeeting ? "作成しています…" : "Teams会議を作成"}
+              </button>
+            </>
+          ) : (
+            <>
+              <dl className="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1">
+                <dt className="text-muted-foreground">参加URL</dt>
+                <dd className="break-all">{webMeeting.joinUrl}</dd>
+                <dt className="text-muted-foreground">会議ID</dt>
+                <dd>{webMeeting.meetingId ?? "取得できませんでした"}</dd>
+                <dt className="text-muted-foreground">パスコード</dt>
+                <dd>{passcodeLabel(webMeeting)}</dd>
+              </dl>
+              {webMeeting.notes.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                  {webMeeting.notes.map((note) => <li key={note}>{note}</li>)}
+                </ul>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {webMeeting.scheduleChanged && (
+                  // 再調整後にTeams側の予定を更新する唯一の入口。これがないと、
+                  // DeskNet'sだけ新しい日時になり、Teams予定は旧日時のまま残る。
+                  <button type="button" onClick={() => void createWebMeeting()} disabled={creatingWebMeeting}
+                    className="rounded-md bg-amber-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                    {creatingWebMeeting ? "更新しています…" : "Teams会議の日時を更新"}
+                  </button>
+                )}
+                <button type="button" onClick={() => void copyWebMeeting()}
+                  disabled={webMeeting.scheduleChanged || creatingWebMeeting}
+                  className="rounded-md bg-sky-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  WEB会議情報をコピー
+                </button>
+                {!webMeeting.complete && (
+                  <button type="button" onClick={() => void createWebMeeting()} disabled={creatingWebMeeting}
+                    className="rounded-md border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60">
+                    {creatingWebMeeting ? "取得しています…" : "不足している情報を再取得"}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+          {manualCopyText !== "" && (
+            <textarea readOnly value={manualCopyText} rows={5}
+              className="w-full rounded-md border bg-background p-2 font-mono text-xs"
+              onFocus={(event) => event.currentTarget.select()} />
+          )}
+          {copyMessage !== "" && <p role="status">{copyMessage}</p>}
+          {webMeetingMessage !== "" && <p role="alert">{webMeetingMessage}</p>}
+          {webMeeting.error !== undefined && webMeetingMessage === "" && (
+            <p role="alert">{webMeeting.error}</p>
+          )}
+        </div>
+      )}
+      {!showWebMeeting && webMeetingMessage !== "" && <p role="alert">{webMeetingMessage}</p>}
       <div className="flex flex-wrap gap-2">
           <button type="button" onClick={() => void openOnThisPC()} disabled={openingLocal}
             className="rounded-md bg-amber-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
