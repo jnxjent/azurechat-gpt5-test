@@ -1,4 +1,5 @@
 import "server-only";
+import { fetchDeskNetsAgent, deskNetsTransportMessage } from "./desknets-agent-transport";
 
 import { userHashedId, userSession } from "@/features/auth-page/helpers";
 import type {
@@ -80,7 +81,7 @@ async function pollDeskNetsAgentRun(
   const pollDeadline = Date.now() + MAX_POLL_DURATION_MS;
   while (Date.now() < pollDeadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    const statusResponse = await fetch(
+    const statusResponse = await fetchDeskNetsAgent(
       `${baseUrl}/browser-agent/runs/${encodeURIComponent(runId)}`,
       { method: "GET", headers, cache: "no-store" },
     );
@@ -152,7 +153,7 @@ export async function runDeskNetsAgent(
       structuredActionIsHint: true,
       structuredFacility: structuredCommand?.facility ?? null,
     });
-    const response = await fetch(`${baseUrl}/browser-agent/runs`, {
+    const response = await fetchDeskNetsAgent(`${baseUrl}/browser-agent/runs`, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -184,10 +185,10 @@ export async function runDeskNetsAgent(
     });
     return completed;
   } catch (error) {
-    console.error("[DeskNetsAgent] request failed:", error);
+    console.error("[DeskNetsAgent] transport failed");
     return {
       status: "failed",
-      message: `DeskNet's Agent request failed: ${String(error)}`,
+      message: deskNetsTransportMessage(error),
     };
   }
 }
@@ -200,7 +201,7 @@ export async function getDeskNetsAgentRun(
   if (!baseUrl) return { status: "failed", message: "DeskNet's Agent is not configured." };
   try {
     const headers = await createAgentHeaders(chatThreadId);
-    const response = await fetch(
+    const response = await fetchDeskNetsAgent(
       `${baseUrl}/browser-agent/runs/${encodeURIComponent(runId)}`,
       { method: "GET", headers, cache: "no-store" },
     );
@@ -209,14 +210,14 @@ export async function getDeskNetsAgentRun(
       ? body
       : { ...body, status: "failed", message: responseMessage(body, `DeskNet's Agent returned HTTP ${response.status}.`) };
   } catch (error) {
-    return { status: "failed", message: `DeskNet's Agent request failed: ${String(error)}` };
+    return { status: "failed", message: deskNetsTransportMessage(error) };
   }
 }
 
 export async function getDeskNetsHandoff(runId: string, chatThreadId: string): Promise<{handoffUrl?: string; message?: string}> {
   if (!getAgentBaseUrl()) return {message:"DeskNet's Agent is not configured."};
   try {
-    const response = await fetch(`${getAgentBaseUrl()}/browser-agent/runs/${encodeURIComponent(runId)}/handoff`, {
+    const response = await fetchDeskNetsAgent(`${getAgentBaseUrl()}/browser-agent/runs/${encodeURIComponent(runId)}/handoff`, {
       headers:await createAgentHeaders(chatThreadId),cache:"no-store",
     });
     const body=await response.json();
@@ -233,7 +234,7 @@ export async function approveDeskNetsAgentRun(
   if (!baseUrl) return { status: "failed", message: "DeskNet's Agent is not configured." };
   try {
     const headers = await createAgentHeaders(chatThreadId);
-    const response = await fetch(
+    const response = await fetchDeskNetsAgent(
       `${baseUrl}/browser-agent/runs/${encodeURIComponent(runId)}/approve`,
       { method: "POST", headers, body: JSON.stringify({ title }), cache: "no-store" },
     );
@@ -243,6 +244,6 @@ export async function approveDeskNetsAgentRun(
     }
     return await pollDeskNetsAgentRun(body, headers);
   } catch (error) {
-    return { status: "failed", message: `DeskNet's Agent request failed: ${String(error)}` };
+    return { status: "failed", message: deskNetsTransportMessage(error) };
   }
 }
