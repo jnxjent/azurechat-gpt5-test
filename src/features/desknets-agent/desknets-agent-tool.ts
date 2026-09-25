@@ -12,6 +12,13 @@ import {
 type DeskNetsToolArguments = DeskNetsStructuredCommand;
 
 function formatToolResult(run: DeskNetsAgentRunResponse, chatThreadId: string) {
+  if (run.webMeetingAdded) {
+    return {
+      integration: "desknets_schedule_agent",
+      status: "completed",
+      message: "WEB会議の希望を追加しました。先ほどのオレンジのカードにTeams会議の作成ボタンが表示されます。",
+    };
+  }
   const message =
     run.result?.assistantMessage?.trim() ||
     run.message?.trim() ||

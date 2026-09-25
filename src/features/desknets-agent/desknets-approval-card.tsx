@@ -140,6 +140,14 @@ const ApprovalCard = ({
 
   useEffect(() => { void loadWebMeeting(); }, [loadWebMeeting]);
 
+  // A later chat message can request WEB conferencing for this existing card.
+  // Refresh only until that request appears; no Graph operation is performed.
+  useEffect(() => {
+    if (webMeeting?.requested || webMeeting?.joinUrl) return;
+    const timer = window.setInterval(() => { void loadWebMeeting(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [webMeeting?.requested, webMeeting?.joinUrl, loadWebMeeting]);
+
   // 明示的な発行操作。候補選択・カード再表示・コピーからは呼ばれない。
   // 作成済みなら作り直さず、未取得の情報の取得だけを再開する。
   const createWebMeeting = async () => {
@@ -169,13 +177,9 @@ const ApprovalCard = ({
     setCopyMessage("");
     setWebMeetingMessage("");
     setManualCopyText("");
-    // 古いカードから古い参加URL・パスコードをコピーさせない。
+    // コピー時に最新の保存内容を読み直す。Graphの更新は行わない。
     const latest = await loadWebMeeting();
     if (latest === undefined) return;
-    if (latest.scheduleChanged) {
-      setWebMeetingMessage("先にTeams会議の日時を更新してからコピーしてください。");
-      return;
-    }
     if (!latest.copyText) {
       setWebMeetingMessage("WEB会議情報を取得できませんでした。もう一度お試しください。");
       return;
@@ -252,16 +256,8 @@ const ApprovalCard = ({
                 </ul>
               )}
               <div className="flex flex-wrap gap-2">
-                {webMeeting.scheduleChanged && (
-                  // 再調整後にTeams側の予定を更新する唯一の入口。これがないと、
-                  // DeskNet'sだけ新しい日時になり、Teams予定は旧日時のまま残る。
-                  <button type="button" onClick={() => void createWebMeeting()} disabled={creatingWebMeeting}
-                    className="rounded-md bg-amber-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
-                    {creatingWebMeeting ? "更新しています…" : "Teams会議の日時を更新"}
-                  </button>
-                )}
                 <button type="button" onClick={() => void copyWebMeeting()}
-                  disabled={webMeeting.scheduleChanged || creatingWebMeeting}
+                  disabled={creatingWebMeeting}
                   className="rounded-md bg-sky-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
                   WEB会議情報をコピー
                 </button>

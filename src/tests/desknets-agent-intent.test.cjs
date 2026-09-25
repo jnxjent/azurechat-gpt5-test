@@ -84,6 +84,12 @@ test("routes a narrow follow-up when recent DeskNet's context exists", () => {
   );
 });
 
+test("routes WEB meeting addition to an existing approval card", () => {
+  const approvalHistory = [{ role: "tool", name: "desknets_schedule_agent", content: '{"status":"awaiting_approval"}' }];
+  assert.equal(shouldRouteToDeskNetsAgent("WEB会議も追加して", approvalHistory), true);
+  assert.equal(shouldRouteToDeskNetsAgent("WEB会議も追加して", []), false);
+});
+
 test("keeps routing from the actual availability response even when tool messages are omitted", () => {
   assert.equal(
     shouldRouteToDeskNetsAgent(

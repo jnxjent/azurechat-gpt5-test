@@ -36,6 +36,7 @@ export type DeskNetsManualActionRequest = DeskNetsApprovalRequest & {
 };
 
 export type DeskNetsAgentRunResponse = {
+  webMeetingAdded?: boolean;
   intentSource?: string;
   task?: { type: string };
   id?: string;

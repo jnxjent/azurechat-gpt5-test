@@ -13,7 +13,15 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     page=await context.newPage();
     let handoffs=0;
     await context.route('https://handoff.test/**', route => {
-      if(route.request().url().includes('/api/desknets-agent/')) {
+      if(route.request().url().includes('webMeeting=1')) {
+        return route.fulfill({contentType:'application/json',body:JSON.stringify({
+          requested:true,status:'ready',revision:1,complete:true,scheduleChanged:true,
+          joinUrl:'https://teams.microsoft.com/l/meetup-join/test',meetingId:'123456789',passcode:'abc123',
+          passcodeAvailability:'required',copyText:'【Teams WEB会議】\n参加URL: https://teams.microsoft.com/l/meetup-join/test',
+          notes:['このカードの日時または件名はTeams側の予定と異なります。'],registered:false,
+        })});
+      }
+      if(route.request().url().includes('/api/desknets-agent/') && route.request().url().includes('handoff=1')) {
         handoffs++;
         return route.fulfill({contentType:'application/json',body:JSON.stringify({handoffUrl:liveUrl ?? "https://desknets.midac.jp/dneo/dneo.cgi?cmd=schindex#cmd=schaddtarget&date=20990918&enddate=20990918&starttime=1400&endtime=1500&id=186&id=5&id=6"})});
       }
@@ -42,6 +50,10 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       window.ReactDOM.createRoot(document.getElementById('root')).render(react.createElement(loaded.exports.DeskNetsApprovalCard,{toolResult}));
     },code);
     const button=page.getByRole('button',{name:"desknet'sを開く",exact:true});
+    const copyButton=page.getByRole('button',{name:'WEB会議情報をコピー',exact:true});
+    await copyButton.waitFor({state:'visible'});
+    assert.equal(await copyButton.isEnabled(),true);
+    assert.equal(await page.getByRole('button',{name:'Teams会議の日時を更新'}).count(),0);
     for(let i=0;i<2;i++) {
       const popupPromise=context.waitForEvent('page');
       await button.click();

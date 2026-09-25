@@ -113,7 +113,7 @@ export function hasActiveDeskNetsTurn(messages: unknown[]): boolean {
 }
 
 function mentionsSchedulingField(message: string): boolean {
-  return /会議室|応接室|ミーティングルーム|参加者|出席者|日時|日付|時刻|開始|終了|所要時間|メール|件名|タイトル|候補|確定|登録|予約|キャンセル/.test(
+  return /会議室|応接室|ミーティングルーム|(?:WEB|Teams|ウェブ|オンライン)会議|参加者|出席者|日時|日付|時刻|開始|終了|所要時間|メール|件名|タイトル|候補|確定|登録|予約|キャンセル/i.test(
     message.normalize("NFKC"),
   );
 }
