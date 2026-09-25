@@ -120,6 +120,22 @@ function mentionsSchedulingField(message: string): boolean {
 
 type SchedulingHistoryMessage = { role?: unknown; content?: unknown; name?: unknown };
 
+// Tool messages are not always retained in chat history. A numbered list of
+// dated time slots in the most recent assistant turn is still enough context
+// to route a short candidate selection back to the scheduling agent.
+function hasRecentNumberedSchedulingCandidates(messages: unknown[]): boolean {
+  if (!Array.isArray(messages)) return false;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as SchedulingHistoryMessage | undefined;
+    if (message?.role === "user") return false;
+    if (message?.role !== "assistant" || typeof message.content !== "string") continue;
+    const content = message.content.normalize("NFKC");
+    const numberedSlots = content.match(/^\s*\d{1,2}[.)]\s*(?:\*\*)?\s*(?:[<\uFF1C].*?[>\uFF1E]\s*)?(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[/\u6708]\d{1,2}\u65e5?)\s+\d{1,2}:\d{2}/gm);
+    if ((numberedSlots?.length ?? 0) >= 2) return true;
+  }
+  return false;
+}
+
 export function hasDeskNetsAgentContext(messages: unknown[]): boolean {
   if (!Array.isArray(messages)) return false;
 
@@ -141,6 +157,7 @@ export function shouldRouteToDeskNetsAgent(
     isDeskNetsAgentRequest(message) ||
     isAwaitingFacilityChoiceReply(history) ||
     isAwaitingParticipantChoiceReply(history) ||
+    (isDeskNetsAgentFollowUpRequest(message) && hasRecentNumberedSchedulingCandidates(history)) ||
     (hasActiveDeskNetsTurn(history) && mentionsSchedulingField(message)) ||
     (hasContinuousSchedulingContext(history) &&
       (isDeskNetsAgentFollowUpRequest(message) || mentionsSchedulingField(message)))

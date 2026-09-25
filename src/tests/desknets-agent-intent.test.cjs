@@ -20,6 +20,12 @@ function loadIntentModule() {
 }
 
 const { shouldRouteToDeskNetsAgent } = loadIntentModule();
+test("routes a candidate choice when only the numbered assistant reply remains in history", () => {
+  const candidates = [{ role: "assistant", content: "会議室が空いている候補です。\n1. 10/1 13:00〜14:00\n2. 10/2 10:00〜11:00\n6. 10/6 10:00〜11:00" }];
+  assert.equal(shouldRouteToDeskNetsAgent("では６で", candidates), true);
+  assert.equal(shouldRouteToDeskNetsAgent("では６で", [{ role: "assistant", content: "1. 売上\n2. 利益" }]), false);
+  assert.equal(shouldRouteToDeskNetsAgent("では６で", [...candidates, { role: "user", content: "別の話をします" }]), false);
+});
 test("bare candidate numbers continue a scheduling turn but not an unrelated turn", () => {
   const history=[{role:"tool",name:"desknets_schedule_agent",content:"candidates"}];
   for(const message of ["では、１で","では、1で","1で","じゃあ、2で","3番で"]) {
