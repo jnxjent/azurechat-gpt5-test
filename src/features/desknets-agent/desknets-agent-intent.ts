@@ -1,6 +1,6 @@
 /** Lightweight routing for the built-in DeskNet's Agent tool. */
 export function isDeskNetsAgentRequest(message: string): boolean {
-  const text = (message || "").trim();
+  const text = (message || "").normalize("NFKC").trim();
   if (!text) return false;
 
   const matched = [
@@ -12,6 +12,9 @@ export function isDeskNetsAgentRequest(message: string): boolean {
     /(?:\u6253\u3061\u5408\u308f\u305b|\u4f1a\u8b70).*(?:\u53ef\u80fd|\u5019\u88dc|\u7a7a\u304d|\u4e88\u5b9a)/i,
     /(?:\u53ef\u80fd|\u5019\u88dc|\u7a7a\u304d).*(?:\u65e5\u6642|\u6642\u9593|\u65e5\u7a0b)/i,
     /\u53c2\u52a0\u8005.*(?:\u4e88\u5b9a|\u7a7a\u304d|\u65e5\u7a0b)/i,
+    // A numbered scheduling candidate plus a WEB meeting request must go back
+    // to the Agent even when earlier scheduling turns are outside chat history.
+    /(?:\u4e0a\u8a18|\u5019\u88dc)?\s*[1-9]\d*\s*(?:\u756a)?(?:\u3067|\u306b\u3057\u3066|\u3092\u9078\u629e).*?(?:WEB|Teams|\u30aa\u30f3\u30e9\u30a4\u30f3)\s*\u4f1a\u8b70.*?(?:\u8a2d\u5b9a|\u4f5c\u6210|\u8ffd\u52a0|\u4e88\u7d04)/i,
   ].some((pattern) => pattern.test(text));
 
   return matched;
