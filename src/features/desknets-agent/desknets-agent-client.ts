@@ -175,13 +175,35 @@ export async function runDeskNetsAgent(
       };
     }
 
-    // Only an actually waiting run needs the queue card. For an active run,
-    // wait for its result so the chat model receives the numbered candidates
-    // or approval request in the same turn.
-    const completed = response.headers.get("x-desknets-async-queue") === "1" &&
-      body.status === "queued"
-      ? body
-      : await pollDeskNetsAgentRun(body, headers);
+    const asyncQueue = response.headers.get("x-desknets-async-queue") === "1";
+    let current = body;
+    // POST contains the run's initial "queued" status even when the scheduler
+    // has already started it. Ask for its actual state before deciding whether
+    // to leave a waiting card or return the result to the chat model.
+    if (asyncQueue && current.status === "queued") {
+      const runId = current.id || current.runId;
+      if (runId) {
+        const statusResponse = await fetchDeskNetsAgent(
+          `${baseUrl}/browser-agent/runs/${encodeURIComponent(runId)}`,
+          { method: "GET", headers, cache: "no-store" },
+        );
+        const statusBody = await readAgentResponse(statusResponse);
+        if (!statusResponse.ok) {
+          return {
+            ...statusBody,
+            id: runId,
+            status: "failed",
+            message: responseMessage(statusBody, `DeskNet's Agent status returned HTTP ${statusResponse.status}.`),
+          };
+        }
+        current = statusBody;
+      }
+    }
+    // Only an actually waiting run needs the queue card. An active run must
+    // return numbered candidates or an approval request in this chat turn.
+    const completed = asyncQueue && current.status === "queued"
+      ? current
+      : await pollDeskNetsAgentRun(current, headers);
     console.log("[DeskNetsAgent] API result", {
       chatThreadId,
       runId: completed.id || completed.runId,

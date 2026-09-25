@@ -44,12 +44,13 @@ test("an active run returns its numbered candidates to the chat turn", async () 
   try {
     const calls = [];
     const client = loadClient([
-      { body: { id: "run-1", status: "running" }, headers: { "x-desknets-async-queue": "1" } },
+      { body: { id: "run-1", status: "queued" }, headers: { "x-desknets-async-queue": "1" } },
+      { body: { id: "run-1", status: "running" } },
       { body: { id: "run-1", status: "completed", result: { assistantMessage: "1. 月曜 10:30〜11:30" } } },
     ], calls);
     const result = await client.runDeskNetsAgent("来週月曜日で候補を挙げて", "thread-1");
     assert.equal(result.result.assistantMessage, "1. 月曜 10:30〜11:30");
-    assert.deepEqual(calls.map((call) => call.method), ["POST", "GET"]);
+    assert.deepEqual(calls.map((call) => call.method), ["POST", "GET", "GET"]);
   } finally {
     if (previous === undefined) delete process.env.DESKNETS_AGENT_API_URL;
     else process.env.DESKNETS_AGENT_API_URL = previous;
@@ -63,10 +64,11 @@ test("a waiting run leaves a queue card to show progress", async () => {
     const calls = [];
     const client = loadClient([
       { body: { id: "run-2", status: "queued" }, headers: { "x-desknets-async-queue": "1" } },
+      { body: { id: "run-2", status: "queued" } },
     ], calls);
     const result = await client.runDeskNetsAgent("候補を挙げて", "thread-2");
     assert.equal(result.status, "queued");
-    assert.deepEqual(calls.map((call) => call.method), ["POST"]);
+    assert.deepEqual(calls.map((call) => call.method), ["POST", "GET"]);
   } finally {
     if (previous === undefined) delete process.env.DESKNETS_AGENT_API_URL;
     else process.env.DESKNETS_AGENT_API_URL = previous;
@@ -84,12 +86,13 @@ test("an active selection returns the approval card in the same turn", async () 
       end: "2026-09-28T11:30:00+09:00",
     };
     const client = loadClient([
-      { body: { id: "run-3", status: "running" }, headers: { "x-desknets-async-queue": "1" } },
+      { body: { id: "run-3", status: "queued" }, headers: { "x-desknets-async-queue": "1" } },
+      { body: { id: "run-3", status: "running" } },
       { body: { id: "run-3", status: "awaiting_approval", result: { approvalRequest } } },
     ], calls);
     const result = await client.runDeskNetsAgent("では1で", "thread-3");
     assert.deepEqual(result.result.approvalRequest, approvalRequest);
-    assert.deepEqual(calls.map((call) => call.method), ["POST", "GET"]);
+    assert.deepEqual(calls.map((call) => call.method), ["POST", "GET", "GET"]);
   } finally {
     if (previous === undefined) delete process.env.DESKNETS_AGENT_API_URL;
     else process.env.DESKNETS_AGENT_API_URL = previous;
