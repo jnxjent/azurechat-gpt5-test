@@ -28,7 +28,7 @@ export function DeskNetsCredentialRegistration() {
   if (registered === null) return null;
 
   return (
-    <section className="mx-4 mb-2 rounded-md border bg-background px-3 py-2 text-sm" aria-label="DeskNet's ログイン設定">
+    <section className="relative z-20 mx-4 mb-32 rounded-md border bg-background px-3 py-2 text-sm" aria-label="DeskNet's ログイン設定">
       <div className="flex items-center justify-between gap-2">
         <span>{!sharedReady ? "DeskNet's 共通入口の認証が未設定です。管理者に連絡してください。" :
           !transportReady ? "DeskNet's ログイン登録の通信設定が未完了です。管理者に連絡してください。" :
