@@ -140,14 +140,6 @@ const ApprovalCard = ({
 
   useEffect(() => { void loadWebMeeting(); }, [loadWebMeeting]);
 
-  // A later chat message can request WEB conferencing for this existing card.
-  // Refresh only until that request appears; no Graph operation is performed.
-  useEffect(() => {
-    if (webMeeting?.requested || webMeeting?.joinUrl) return;
-    const timer = window.setInterval(() => { void loadWebMeeting(); }, 3000);
-    return () => window.clearInterval(timer);
-  }, [webMeeting?.requested, webMeeting?.joinUrl, loadWebMeeting]);
-
   // 明示的な発行操作。候補選択・カード再表示・コピーからは呼ばれない。
   // 作成済みなら作り直さず、未取得の情報の取得だけを再開する。
   const createWebMeeting = async () => {
@@ -208,9 +200,6 @@ const ApprovalCard = ({
       minute: "2-digit",
     }).format(new Date(value));
 
-  const showWebMeeting =
-    webMeeting !== null && (webMeeting.requested || webMeeting.joinUrl !== undefined);
-
   return (
     <div className="space-y-3 rounded-lg border-2 border-amber-500/70 bg-amber-500/10 p-4">
       <div className="font-semibold">DeskNet&apos;s 予定内容の最終確認</div>
@@ -226,10 +215,9 @@ const ApprovalCard = ({
         <dt className="text-muted-foreground">メール</dt>
         <dd>{approval.emailNotificationWillBeSent ? "送信する" : "送信しない"}</dd>
       </dl>
-      {showWebMeeting && webMeeting !== null && (
-        <div className="space-y-2 rounded-md border bg-background/60 p-3 text-sm">
+      <div className="space-y-2 rounded-md border bg-background/60 p-3 text-sm">
           <div className="font-semibold">Teams WEB会議</div>
-          {webMeeting.joinUrl === undefined ? (
+          {webMeeting?.joinUrl === undefined ? (
             <>
               <p className="text-muted-foreground">
                 本人名義でTeams会議を作成し、参加情報を表示します。Teams側の招待メールは送信しません。
@@ -277,12 +265,10 @@ const ApprovalCard = ({
           )}
           {copyMessage !== "" && <p role="status">{copyMessage}</p>}
           {webMeetingMessage !== "" && <p role="alert">{webMeetingMessage}</p>}
-          {webMeeting.error !== undefined && webMeetingMessage === "" && (
+          {webMeeting?.error !== undefined && webMeetingMessage === "" && (
             <p role="alert">{webMeeting.error}</p>
           )}
-        </div>
-      )}
-      {!showWebMeeting && webMeetingMessage !== "" && <p role="alert">{webMeetingMessage}</p>}
+      </div>
       <div className="flex flex-wrap gap-2">
           <button type="button" onClick={() => void openOnThisPC()} disabled={openingLocal}
             className="rounded-md bg-amber-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">

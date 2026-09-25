@@ -12,13 +12,27 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     const context=liveUrl ? browser.contexts()[0] : await browser.newContext();
     page=await context.newPage();
     let handoffs=0;
+    let meetingsCreated=0;
     await context.route('https://handoff.test/**', route => {
       if(route.request().url().includes('webMeeting=1')) {
+        if(meetingsCreated===0) return route.fulfill({contentType:'application/json',body:JSON.stringify({
+          requested:false,status:'not_requested',revision:0,complete:false,scheduleChanged:false,
+          notes:[],registered:false,
+        })});
         return route.fulfill({contentType:'application/json',body:JSON.stringify({
           requested:true,status:'ready',revision:1,complete:true,scheduleChanged:true,
           joinUrl:'https://teams.microsoft.com/l/meetup-join/test',meetingId:'123456789',passcode:'abc123',
           passcodeAvailability:'required',copyText:'【Teams WEB会議】\n参加URL: https://teams.microsoft.com/l/meetup-join/test',
           notes:['このカードの日時または件名はTeams側の予定と異なります。'],registered:false,
+        })});
+      }
+      if(route.request().method()==='POST' && route.request().url().includes('/api/desknets-agent/runs/')) {
+        meetingsCreated++;
+        return route.fulfill({contentType:'application/json',body:JSON.stringify({
+          requested:true,status:'ready',revision:1,complete:true,scheduleChanged:false,
+          joinUrl:'https://teams.microsoft.com/l/meetup-join/test',meetingId:'123456789',passcode:'abc123',
+          passcodeAvailability:'required',copyText:'【Teams WEB会議】\n参加URL: https://teams.microsoft.com/l/meetup-join/test',
+          notes:[],registered:false,
         })});
       }
       if(route.request().url().includes('/api/desknets-agent/') && route.request().url().includes('handoff=1')) {
@@ -51,8 +65,12 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     },code);
     const button=page.getByRole('button',{name:"desknet'sを開く",exact:true});
     const copyButton=page.getByRole('button',{name:'WEB会議情報をコピー',exact:true});
+    const createButton=page.getByRole('button',{name:'Teams会議を作成',exact:true});
+    await createButton.waitFor({state:'visible'});
+    await createButton.click();
     await copyButton.waitFor({state:'visible'});
     assert.equal(await copyButton.isEnabled(),true);
+    assert.equal(meetingsCreated,1);
     assert.equal(await page.getByRole('button',{name:'Teams会議の日時を更新'}).count(),0);
     for(let i=0;i<2;i++) {
       const popupPromise=context.waitForEvent('page');
