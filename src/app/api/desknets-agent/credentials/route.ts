@@ -1,6 +1,7 @@
 import { userHashedId } from "@/features/auth-page/helpers";
 import { fetchDeskNetsAgent } from "@/features/desknets-agent/desknets-agent-transport";
 import { sealDeskNetsCredentials } from "@/features/desknets-agent/credential-envelope";
+import { isAllowedCredentialOrigin } from "@/features/desknets-agent/credential-request-origin";
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +49,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
-  if (origin !== request.nextUrl.origin) {
+  if (!isAllowedCredentialOrigin(origin, request.nextUrl.origin, process.env.NEXTAUTH_URL)) {
     return NextResponse.json({ message: "Invalid request origin." }, { status: 403 });
   }
   const body: unknown = await request.json().catch(() => null);
@@ -76,7 +77,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  if (request.headers.get("origin") !== request.nextUrl.origin) {
+  if (!isAllowedCredentialOrigin(request.headers.get("origin"), request.nextUrl.origin, process.env.NEXTAUTH_URL)) {
     return NextResponse.json({ message: "Invalid request origin." }, { status: 403 });
   }
   return forward("DELETE");
