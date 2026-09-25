@@ -119,6 +119,13 @@ test("keeps routing from the actual availability response even when tool message
     ),
     true
   );
+  assert.equal(
+    shouldRouteToDeskNetsAgent(
+      "10:30-11:30",
+      [{ role: "tool", name: "desknets_schedule_agent", content: "1. 月曜 10:30-11:30" }]
+    ),
+    true
+  );
 });
 
 test("routes natural-language room changes while DeskNet's scheduling is active", () => {

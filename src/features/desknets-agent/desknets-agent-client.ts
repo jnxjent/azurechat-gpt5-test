@@ -175,8 +175,11 @@ export async function runDeskNetsAgent(
       };
     }
 
+    // Only an actually waiting run needs the queue card. For an active run,
+    // wait for its result so the chat model receives the numbered candidates
+    // or approval request in the same turn.
     const completed = response.headers.get("x-desknets-async-queue") === "1" &&
-      ["queued", "running"].includes(body.status)
+      body.status === "queued"
       ? body
       : await pollDeskNetsAgentRun(body, headers);
     console.log("[DeskNetsAgent] API result", {
