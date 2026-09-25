@@ -184,7 +184,7 @@ const ApprovalCard = ({
       setWebMeetingMessage("会議が更新されました。表示を更新したので、新しい内容を確認してからコピーしてください。");
       return;
     }
-    const copyText = latest.copyText.replace(/\r?\n【Teams WEB会議情報ここまで】$/, "");
+    const copyText = latest.copyText.replaceAll("【Teams WEB会議情報ここまで】", "").trimEnd();
     try {
       await navigator.clipboard.writeText(copyText);
       // 成功したときだけ成功と表示する。
