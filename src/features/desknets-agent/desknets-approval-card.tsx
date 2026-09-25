@@ -184,12 +184,13 @@ const ApprovalCard = ({
       setWebMeetingMessage("会議が更新されました。表示を更新したので、新しい内容を確認してからコピーしてください。");
       return;
     }
+    const copyText = latest.copyText.replace(/\r?\n【Teams WEB会議情報ここまで】$/, "");
     try {
-      await navigator.clipboard.writeText(latest.copyText);
+      await navigator.clipboard.writeText(copyText);
       // 成功したときだけ成功と表示する。
       setCopyMessage("コピーしました。DeskNet'sの「内容」欄の末尾に貼り付けてください。");
     } catch {
-      setManualCopyText(latest.copyText);
+      setManualCopyText(copyText);
       setWebMeetingMessage("コピーできませんでした。下の内容を選択して手動でコピーしてください。");
     }
   };
