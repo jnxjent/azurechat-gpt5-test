@@ -35,6 +35,7 @@ const card = loadComponent("features/desknets-agent/desknets-approval-card.tsx",
 });
 const { default: MessageContent } = loadComponent("features/chat-page/message-content.tsx", {
   "@/features/desknets-agent/desknets-approval-card": card,
+  "@/features/desknets-agent/desknets-queue-card": { DeskNetsQueueCard: () => null },
   "@/features/ui/markdown/markdown": { Markdown: ({ content }) => React.createElement("p", null, content) },
   "@/lib/linkifyPhone": { splitTextWithPhones: text => [{ type: "text", value: text }] },
   "lucide-react": icons,

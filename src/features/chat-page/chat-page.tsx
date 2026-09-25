@@ -1,5 +1,6 @@
 "use client";
 import { ChatInput } from "@/features/chat-page/chat-input/chat-input";
+import { DeskNetsCredentialRegistration } from "@/features/desknets-agent/desknets-credential-registration";
 import { chatStore, useChat } from "@/features/chat-page/chat-store";
 import { ChatLoading } from "@/features/ui/chat/chat-message-area/chat-loading";
 import { ChatMessageArea } from "@/features/ui/chat/chat-message-area/chat-message-area";
@@ -47,7 +48,7 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
     });
   }, [props.messages, session?.user?.name, props.chatThread]);
 
-  const { messages, loading } = useChat();
+  const { messages, loading, chatThreadId } = useChat();
   const current = useRef<HTMLDivElement>(null);
   useChatScrollAnchor({ ref: current });
 
@@ -113,9 +114,10 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
               </ChatMessageArea>
             );
           })}
-          {loading === "loading" && <ChatLoading />}
+          {loading === "loading" && <ChatLoading chatThreadId={chatThreadId} />}
         </ChatMessageContentArea>
       </ChatMessageContainer>
+      <DeskNetsCredentialRegistration />
       <ChatInput isAdmin={isAdmin} />
     </main>
   );

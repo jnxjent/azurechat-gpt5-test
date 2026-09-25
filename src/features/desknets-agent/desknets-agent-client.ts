@@ -175,7 +175,10 @@ export async function runDeskNetsAgent(
       };
     }
 
-    const completed = await pollDeskNetsAgentRun(body, headers);
+    const completed = response.headers.get("x-desknets-async-queue") === "1" &&
+      ["queued", "running"].includes(body.status)
+      ? body
+      : await pollDeskNetsAgentRun(body, headers);
     console.log("[DeskNetsAgent] API result", {
       chatThreadId,
       runId: completed.id || completed.runId,
@@ -211,6 +214,24 @@ export async function getDeskNetsAgentRun(
     return response.ok
       ? body
       : { ...body, status: "failed", message: responseMessage(body, `DeskNet's Agent returned HTTP ${response.status}.`) };
+  } catch (error) {
+    return { status: "failed", message: deskNetsTransportMessage(error) };
+  }
+}
+
+export async function cancelDeskNetsAgentRun(
+  runId: string,
+  chatThreadId: string,
+): Promise<DeskNetsAgentRunResponse> {
+  const baseUrl = getAgentBaseUrl();
+  if (!baseUrl) return { status: "failed", message: "DeskNet's Agent is not configured." };
+  try {
+    const response = await fetchDeskNetsAgent(
+      `${baseUrl}/browser-agent/runs/${encodeURIComponent(runId)}/cancel`,
+      { method: "POST", headers: await createAgentHeaders(chatThreadId), cache: "no-store" },
+    );
+    const body = await readAgentResponse(response);
+    return response.ok ? body : { ...body, status: "failed", message: responseMessage(body, "取消できませんでした。") };
   } catch (error) {
     return { status: "failed", message: deskNetsTransportMessage(error) };
   }
@@ -374,7 +395,10 @@ export async function approveDeskNetsAgentRun(
     if (!response.ok) {
       return { ...body, status: "failed", message: responseMessage(body, `DeskNet's Agent returned HTTP ${response.status}.`) };
     }
-    return await pollDeskNetsAgentRun(body, headers);
+    return response.headers.get("x-desknets-async-queue") === "1" &&
+      ["queued", "running"].includes(body.status)
+      ? body
+      : await pollDeskNetsAgentRun(body, headers);
   } catch (error) {
     return { status: "failed", message: deskNetsTransportMessage(error) };
   }

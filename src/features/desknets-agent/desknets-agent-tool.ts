@@ -20,6 +20,9 @@ function formatToolResult(run: DeskNetsAgentRunResponse, chatThreadId: string) {
     };
   }
   const message =
+    (["queued", "running"].includes(run.status)
+      ? "DeskNet's の依頼を受け付けました。進行状況と結果は下のカードに表示します。"
+      : undefined) ||
     run.result?.assistantMessage?.trim() ||
     run.message?.trim() ||
     run.error?.trim() ||

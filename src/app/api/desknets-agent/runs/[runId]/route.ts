@@ -1,5 +1,6 @@
 import {
   approveDeskNetsAgentRun,
+  cancelDeskNetsAgentRun,
   createDeskNetsWebMeeting,
   getDeskNetsAgentRun,
   getDeskNetsHandoff,
@@ -56,6 +57,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
     : "";
   if (!validIdentifier(context.params.runId) || !validIdentifier(chatThreadId)) {
     return NextResponse.json({ status: "failed", message: "Invalid run or chat thread ID." }, { status: 400 });
+  }
+  if (action === "cancel") {
+    const run = await cancelDeskNetsAgentRun(context.params.runId, chatThreadId);
+    return NextResponse.json(run, { headers: { "Cache-Control": "no-store" } });
   }
   if (action === "create-web-meeting") {
     // 明示的な「Teams会議を作成」操作だけがここへ来る。コピー操作はこの経路を通らない。

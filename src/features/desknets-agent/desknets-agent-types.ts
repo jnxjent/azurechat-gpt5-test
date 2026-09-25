@@ -37,6 +37,7 @@ export type DeskNetsManualActionRequest = DeskNetsApprovalRequest & {
 
 export type DeskNetsAgentRunResponse = {
   webMeetingAdded?: boolean;
+  queue?: { waitingPosition?: number; activeCount?: number; waitingCount?: number; capacity?: number };
   intentSource?: string;
   task?: { type: string };
   id?: string;
