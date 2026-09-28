@@ -1,4 +1,33 @@
 import { OpenAI } from "openai";
+import { Stream } from "openai/streaming";
+
+// Azure may append content-filter metadata as a choice without a delta. The
+// OpenAI 4.x streaming runner reads choice.delta.content without checking it.
+// Preserve the metadata and finish reason while giving the runner an empty delta.
+function normalizeAzureChatStreams(openai: OpenAI): OpenAI {
+  const completions = openai.chat.completions;
+  const create = completions.create.bind(completions);
+  completions.create = (async (...args: any[]) => {
+    const response = await (create as any)(...args);
+    if (!args[0]?.stream) return response;
+
+    return new Stream(async function* () {
+      for await (const chunk of response) {
+        if (!Array.isArray(chunk.choices)) {
+          yield chunk;
+          continue;
+        }
+        yield {
+          ...chunk,
+          choices: chunk.choices.map((choice: any) =>
+            choice.delta == null ? { ...choice, delta: {} } : choice
+          ),
+        };
+      }
+    }, response.controller);
+  }) as typeof completions.create;
+  return openai;
+}
 
 function azureOpenAIEndpoint(): string {
   const explicit = process.env.AZURE_OPENAI_ENDPOINT?.trim().replace(/\/+$/, "");
@@ -13,7 +42,7 @@ export const OpenAIInstance = () => {
     defaultQuery: { "api-version": process.env.AZURE_OPENAI_API_VERSION },
     defaultHeaders: { "api-key": process.env.AZURE_OPENAI_API_KEY },
   });
-  return openai;
+  return normalizeAzureChatStreams(openai);
 };
 
 export const OpenAIPptInstance = () => {
@@ -27,7 +56,7 @@ export const OpenAIPptInstance = () => {
     defaultQuery: { "api-version": process.env.AZURE_OPENAI_API_VERSION },
     defaultHeaders: { "api-key": process.env.AZURE_OPENAI_API_KEY },
   });
-  return openai;
+  return normalizeAzureChatStreams(openai);
 };
 
 export const OpenAIEmbeddingInstance = () => {
