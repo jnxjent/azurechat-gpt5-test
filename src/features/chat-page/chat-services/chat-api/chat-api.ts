@@ -206,6 +206,9 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
         imageAttachmentCountForRouting
       );
   const shouldUseImageEditTools = Boolean(requiredImageToolName);
+  const roomAvailabilityRequest = isDeskNetsAgentEnabled() &&
+    /(?:会議室|応接室|ルーム)/.test(props.message.normalize("NFKC")) &&
+    /(?:空き|空いて|使える|予約でき|確保でき|利用でき)/.test(props.message.normalize("NFKC"));
   const resolvedMode: ThinkingModeAPI =
     p.apiThinkingMode ?? uiToApi(p.thinkingMode) ?? "normal";
 
@@ -238,7 +241,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   // 2ターン目以降の「候補2に変更して」などでも、同じAgentセッションを継続する。
   if (
     isDeskNetsAgentEnabled() &&
-    shouldRouteToDeskNetsAgent(props.message, history)
+    (roomAvailabilityRequest || shouldRouteToDeskNetsAgent(props.message, history))
   ) {
     extension.push(
       createDeskNetsAgentTool(currentChatThread.id, props.message)
@@ -255,7 +258,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   let chatType: ChatTypes = "extensions";
   if (salesforceRouting.route !== "normal") {
     chatType = "extensions";
-  } else if (shouldUseImageEditTools) {
+  } else if (shouldUseImageEditTools || roomAvailabilityRequest) {
     chatType = "extensions";
   } else if (imageAttachmentUrls.length > 0) {
     chatType = "multimodal";
@@ -298,7 +301,8 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
         userMessage: props.message,
         history,
         extensions: extension,
-        requiredToolName: requiredImageToolName,
+        requiredToolName: requiredImageToolName ??
+          (roomAvailabilityRequest ? "desknets_schedule_agent" : undefined),
         loginEmail: user.email,
         salesforceRouting,
         signal,
