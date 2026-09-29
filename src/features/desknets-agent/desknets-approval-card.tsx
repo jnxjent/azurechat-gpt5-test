@@ -42,6 +42,9 @@ const isApprovalRequest = (value: unknown): value is DeskNetsApprovalRequest => 
     Array.isArray(item.participantIds) &&
     item.participantIds.every((id) => typeof id === "string") &&
     typeof item.facilityId === "string" &&
+    (item.facilityIds === undefined ||
+      (Array.isArray(item.facilityIds) && item.facilityIds.length > 1 &&
+        item.facilityIds.every((id) => typeof id === "string"))) &&
     typeof item.emailNotificationWillBeSent === "boolean";
 };
 
@@ -211,7 +214,7 @@ const ApprovalCard = ({
         <dt className="text-muted-foreground">参加者</dt>
         <dd>{approval.participantIds.join("、")}</dd>
         <dt className="text-muted-foreground">会議室</dt>
-        <dd>{approval.facilityId}</dd>
+        <dd>{(approval.facilityIds ?? [approval.facilityId]).join("、")}</dd>
         <dt className="text-muted-foreground">メール</dt>
         <dd>{approval.emailNotificationWillBeSent ? "送信する" : "送信しない"}</dd>
       </dl>

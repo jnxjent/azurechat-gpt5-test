@@ -28,6 +28,7 @@ export type DeskNetsApprovalRequest = {
   end: string;
   participantIds: string[];
   facilityId: string;
+  facilityIds?: string[];
   emailNotificationWillBeSent: boolean;
 };
 
