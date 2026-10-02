@@ -44,6 +44,9 @@ import { createDeskNetsAgentTool } from "@/features/desknets-agent/desknets-agen
 import {
   shouldRouteToDeskNetsAgent,
 } from "@/features/desknets-agent/desknets-agent-intent";
+import { listUserMemories } from "@/features/memory/memory-service";
+import { handleMemoryChatCommand } from "@/features/memory/memory-chat-handler";
+import { formatMemoryContext, memoryReferenceLabel, selectMemories } from "@/features/memory/memory-rules";
 
 type ChatTypes = "extensions" | "chat-with-file" | "multimodal";
 
@@ -142,6 +145,12 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   }
   const currentChatThread = currentChatThreadResponse.response;
   const user = await getCurrentUser();
+  const userMemories = await listUserMemories();
+  const memoryCommandResponse = await handleMemoryChatCommand({
+    message: props.message, threadId: currentChatThread.id, userName: user.name, memories: userMemories,
+  });
+  if (memoryCommandResponse) return memoryCommandResponse;
+  const selectedMemories = selectMemories(userMemories, props.message);
   const hasSalesforceExtension =
     Boolean(SF_EXTENSION_ID) &&
     currentChatThread.extension.includes(SF_EXTENSION_ID);
@@ -253,6 +262,9 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   }
 
   currentChatThread.personaMessage = `${CHAT_DEFAULT_SYSTEM_PROMPT} \n\n ${currentChatThread.personaMessage}`;
+  if (selectedMemories.length) {
+    currentChatThread.personaMessage += `\n\n${formatMemoryContext(selectedMemories)}`;
+  }
   executionChatThread.personaMessage = currentChatThread.personaMessage;
 
   let chatType: ChatTypes = "extensions";
@@ -311,7 +323,8 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
       break;
   }
 
-  const readableStream = OpenAIStream({ runner, chatThread: currentChatThread });
+  const readableStream = OpenAIStream({ runner, chatThread: currentChatThread,
+    memoryReference: memoryReferenceLabel(selectedMemories) });
   return new Response(readableStream, {
     headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
   });

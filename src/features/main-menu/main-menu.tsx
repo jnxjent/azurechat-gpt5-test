@@ -10,6 +10,7 @@ import {
   Book,
   Home,
   MessageCircle,
+  FileText,
   PocketKnife,
   Sheet,
   VenetianMask,
@@ -51,6 +52,11 @@ export const MainMenu = async () => {
           <MenuItem tooltip="prompts">
             <MenuLink href="/prompt" ariaLabel="Go to the Prompt Library configuration page">
               <Book {...menuIconProps} />
+            </MenuLink>
+          </MenuItem>
+          <MenuItem tooltip="メモ・スキル">
+            <MenuLink href="/memories" ariaLabel="メモ・スキルを管理">
+              <FileText {...menuIconProps} />
             </MenuLink>
           </MenuItem>
           {user.isAdmin && (
