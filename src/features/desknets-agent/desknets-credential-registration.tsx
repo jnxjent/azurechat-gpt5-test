@@ -111,7 +111,7 @@ export function DeskNetsCredentialRegistration() {
             </>}
             <div className="col-span-2 flex flex-wrap justify-end gap-2">
               {sharedReady && transportReady && <button type="submit" disabled={saving} className="rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-                {saving ? "保存中…" : "暗号化して保存"}
+                {saving ? "保存中…" : "保存"}
               </button>}
               {registered && <button type="button" disabled={saving} onClick={() => void removeCredentials()} className="rounded-md border px-3 py-1.5 hover:bg-accent disabled:opacity-50">登録解除</button>}
             </div>

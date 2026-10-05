@@ -191,8 +191,6 @@ export const OpenAIStream = (props: {
         const repairedContent = repairBrokenMarkdownUrls(
           citationNormalizedContent
         );
-        const contentWithMemoryReference = props.memoryReference && repairedContent
-          ? `${repairedContent}\n\n> ${props.memoryReference}` : repairedContent;
         if (repairedContent !== citationNormalizedContent) {
           console.warn(
             "[open-ai-stream] repaired broken markdown URL in finalContent"
@@ -213,7 +211,7 @@ export const OpenAIStream = (props: {
 
           await CreateChatMessage({
             name: AI_NAME,
-            content: contentWithMemoryReference,
+            content: repairedContent,
             role: "assistant",
             chatThreadId: chatThread.id,
           });
@@ -224,7 +222,7 @@ export const OpenAIStream = (props: {
         } finally {
           const response: AzureChatCompletion = {
             type: "finalContent",
-            response: contentWithMemoryReference,
+            response: repairedContent,
           };
           streamResponse(response.type, JSON.stringify(response));
           closeController();
