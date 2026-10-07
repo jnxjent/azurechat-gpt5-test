@@ -26,6 +26,8 @@ jobs:
           npm ci
           node scripts/test-memory-poc.cjs
           node scripts/test-ppt-output-regression.cjs
+          node scripts/test-chat-image-multipart.cjs
+          node scripts/test-web-ppt-attachment-routing.cjs
           node scripts/test-teams-office-attachment-routing.cjs
           node --test tests/desknets-approval-render.test.cjs tests/desknets-agent-intent.test.cjs tests/desknets-agent-transport.test.cjs
           npm run build
