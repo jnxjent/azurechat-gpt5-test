@@ -18,6 +18,7 @@ export type DeskNetsAgentRunRequest = {
   site: "desknets";
   mode: DeskNetsAgentMode;
   prompt: string;
+  defaultFacilityQuery?: string;
   conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
   structuredCommand?: DeskNetsStructuredCommand;
 };

@@ -1,4 +1,6 @@
 import "server-only";
+import { listUserMemories } from "@/features/memory/memory-service";
+import { profileFacilityPreference } from "@/features/memory/memory-facility";
 import { fetchDeskNetsAgent, deskNetsTransportMessage } from "./desknets-agent-transport";
 
 import { getToken } from "next-auth/jwt";
@@ -136,6 +138,7 @@ export async function runDeskNetsAgent(
     createAgentHeaders(chatThreadId),
   ]);
 
+  const defaultFacilityQuery = profileFacilityPreference(await listUserMemories());
   const payload: DeskNetsAgentRunRequest = {
     userId: hashedUserId,
     userEmail: currentUser?.email || undefined,
@@ -144,6 +147,7 @@ export async function runDeskNetsAgent(
     mode: "read",
     prompt,
     conversationHistory,
+    ...(defaultFacilityQuery === undefined ? {} : { defaultFacilityQuery }),
     ...(structuredCommand === undefined ? {} : { structuredCommand }),
   };
 

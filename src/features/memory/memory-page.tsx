@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { memoryKind, memoryKindLabel } from "./memory-rules";
-import type { MemoryKind, UserMemory } from "./memory-rules";
+import { memoryReferenceMode, memoryKindLabel } from "./memory-rules";
+import type { UserMemory } from "./memory-rules";
 
-const empty = { title: "", content: "", kind: "memo" as MemoryKind, triggers: "", enabled: true };
+const empty = { title: "", content: "", mode: "manual" as "always" | "required" | "manual", triggers: "", enabled: true };
 
 export function MemoryPage() {
   const [items, setItems] = useState<UserMemory[]>([]);
@@ -25,7 +25,7 @@ export function MemoryPage() {
 
   function choose(item: UserMemory | null) {
     setSelected(item);
-    setForm(item ? { title: item.title, content: item.content, kind: memoryKind(item),
+    setForm(item ? { title: item.title, content: item.content, mode: memoryReferenceMode(item),
       triggers: item.triggers.join("、"), enabled: item.enabled } : empty);
     setError("");
     setNotice("");
@@ -38,7 +38,7 @@ export function MemoryPage() {
       const response = await fetch("/api/memories", {
         method: selected ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, mode: form.kind === "memo" ? "always" : "manual", id: selected?.id, version: selected?.version,
+        body: JSON.stringify({ ...form, kind: "memo", id: selected?.id, version: selected?.version,
           triggers: form.triggers.split(/[、,\n]/).map((term) => term.trim()).filter(Boolean) }),
       });
       const data = await response.json();
@@ -64,12 +64,13 @@ export function MemoryPage() {
   }
 
   return <main className="mx-auto max-w-6xl p-6">
-    <h1 className="text-2xl font-semibold">メモ・スキル</h1>
-    <p className="mt-2 text-sm text-muted-foreground">MD（メモ）は毎回参照します。Skill（スキル）は「〇〇のskillを参照して」と指定した時に参照します。保存名・本文・種類は後から変更できます。</p>
-    <p className="mt-2 text-sm text-muted-foreground">チャットで「エラーでした」と伝えるとLearnedLessonを記録します。共通注意は短いMD 1件、失敗の詳細と再確認手順は個別のSkillに保存します。</p>
+    <h1 className="text-2xl font-semibold">メモ</h1>
+    <p className="mt-2 text-sm text-muted-foreground">プロフィールは最小限に短縮して必須参照します。通常のメモは、名前の明示または関連度に応じて参照します。</p>
+    <p className="mt-2 text-sm text-muted-foreground">プロフィールに「優先会議室：品川」などを記入すると、DeskNet'sの日程調整で会議室を省略した場合に使用します。今回指定した会議室を優先します。</p>
+    <p className="mt-2 text-sm text-muted-foreground">チャットで「エラーでした」と伝えるとLearnedLessonを記録します。共通注意と失敗の詳細は、どちらも同じメモ一覧に保存します。</p>
     <div className="mt-6 grid gap-6 md:grid-cols-[16rem_1fr]">
       <aside className="space-y-2">
-        <button disabled={busy} type="button" className="w-full rounded border px-3 py-2 text-left" onClick={() => choose(null)}>＋ 新しいメモ・スキル</button>
+        <button disabled={busy} type="button" className="w-full rounded border px-3 py-2 text-left" onClick={() => choose(null)}>＋ 新しいメモ</button>
         {items.map((item) => <button disabled={busy} key={item.id} type="button" onClick={() => choose(item)}
           className={`w-full rounded border px-3 py-2 text-left ${selected?.id === item.id ? "border-primary" : ""}`}>
           <span className="block font-medium">{item.title}</span>
@@ -81,14 +82,15 @@ export function MemoryPage() {
           <input required maxLength={120} value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })}
             className="mt-1 w-full rounded border bg-background p-2" placeholder="例: AzureChat TestSite デプロイ手順" />
         </label>
-        <label className="block text-sm font-medium">種類
-          <select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value as MemoryKind })}
+        <label className="block text-sm font-medium">参照条件
+          <select value={form.mode} onChange={(event) => setForm({ ...form, mode: event.target.value as "always" | "required" | "manual" })}
             className="mt-1 w-full rounded border bg-background p-2">
-            <option value="memo">MD（メモ・毎回参照）</option>
-            <option value="skill">Skill（スキル・指定時に参照）</option>
+            <option value="always">毎回参照</option>
+            <option value="required">プロフィール・必須参照</option>
+            <option value="manual">個別参照（名前・関連度）</option>
           </select>
         </label>
-        {form.kind === "skill" && <label className="block text-sm font-medium">呼び出し語（任意・読点または改行区切り）
+        {form.mode === "manual" && <label className="block text-sm font-medium">呼び出し語（任意・読点または改行区切り）
           <input value={form.triggers} onChange={(event) => setForm({ ...form, triggers: event.target.value })}
             className="mt-1 w-full rounded border bg-background p-2" placeholder="例: TestSite デプロイ、テスト環境への反映" />
         </label>}
