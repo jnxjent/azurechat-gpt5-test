@@ -73,3 +73,22 @@ test("unrelated, malformed and candidate-only results do not render approval but
     assert.doesNotMatch(render("tool", value), /このPCのDeskNet|議題をコピー/);
   }
 });
+
+test("Teams confirmation renders the shared AC card with Teams web meeting controls", () => {
+  const confirmation = loadComponent("features/desknets-agent/desknets-teams-confirmation.tsx", {
+    react: {...React, useEffect: () => {}, useState: initial => [initial === null
+      ? {status: "awaiting_approval", result: {approvalRequest: approval.approvalRequest}}
+      : initial, () => {}]},
+    "./desknets-approval-card": card,
+    "./desknets-credential-registration": {DeskNetsCredentialRegistration: () => null},
+  });
+  const html = renderToStaticMarkup(React.createElement(confirmation.DeskNetsTeamsConfirmation, {
+    runId: "test-run", chatThreadId: "teams-test-thread",
+  }));
+  assert.match(html, /参加者A、参加者B、参加者C/);
+  assert.match(html, /会議室C/);
+  assert.match(html, /Teams会議を作成/);
+  assert.match(html, /desknet(?:&#x27;|&#39;|')sを開く/);
+  assert.match(html, /候補に戻る/);
+  assert.doesNotMatch(html, /DeskNetsの予定追加画面を開く/);
+});

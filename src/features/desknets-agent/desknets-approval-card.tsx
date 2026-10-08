@@ -74,20 +74,23 @@ const passcodeLabel = (view: WebMeetingView): string => {
 
 export const DeskNetsApprovalCard = ({
   toolResult,
+  onReturnToCandidates,
 }: {
   toolResult: Record<string, unknown> | null;
+  onReturnToCandidates?: () => void;
 }) => {
   const parsed = parseApprovalToolResult(toolResult);
   if (!parsed) return null;
 
-  return <ApprovalCard key={parsed.runId} {...parsed} />;
+  return <ApprovalCard key={parsed.runId} {...parsed} onReturnToCandidates={onReturnToCandidates} />;
 };
 
 const ApprovalCard = ({
   runId,
   chatThreadId,
   approvalRequest: approval,
-}: DeskNetsApprovalToolResult) => {
+  onReturnToCandidates,
+}: DeskNetsApprovalToolResult & {onReturnToCandidates?: () => void}) => {
   const [localMessage, setLocalMessage] = useState("");
   const [openingLocal, setOpeningLocal] = useState(false);
   const [webMeeting, setWebMeeting] = useState<WebMeetingView | null>(null);
@@ -279,7 +282,7 @@ const ApprovalCard = ({
           </button>
           <button
             type="button"
-            onClick={() => void chatStore.submitText("候補に戻して")}
+            onClick={() => onReturnToCandidates ? onReturnToCandidates() : void chatStore.submitText("候補に戻して")}
             className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
           >
             <RotateCcw size={16} />候補に戻る

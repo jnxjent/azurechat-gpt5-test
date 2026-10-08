@@ -188,6 +188,7 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
       const userEmail = await resolveActivityUserEmail({ activity, api });
       const scheduling = await handleTeamsDeskNets({
         message: messageText, userEmail, conversationId, activityId,
+        onWaiting: async message => { await send(message); },
         conversationType: activity.conversation?.conversationType === undefined ? undefined : String(activity.conversation.conversationType),
       });
       if (scheduling) {

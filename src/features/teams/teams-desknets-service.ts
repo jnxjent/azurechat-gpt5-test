@@ -8,6 +8,7 @@ import type { DeskNetsAgentRunResponse } from "@/features/desknets-agent/desknet
 import { isTeamsDeskNetsEnabled, requestTeamsDeskNets, teamsDeskNetsOwner } from "./teams-desknets-client";
 
 type History = Array<{role: "user" | "assistant"; content: string}>;
+export const TEAMS_DESKNETS_WAIT_MESSAGE = "少々お待ちください。結果判明したらお知らせします。";
 type Reply = { text: string; confirmationUrl?: string };
 type State = { id: string; userId: string; type: "TEAMS_DESKNETS_STATE"; updatedAt: number;
   threadId?: string; history: History; pendingRunId?: string; deliveryUncertain?: boolean; lastActivityId?: string; lastReply?: Reply; ttl: number };
@@ -29,7 +30,7 @@ export function formatTeamsDeskNetsReply(run: DeskNetsAgentRunResponse, threadId
   const message = run.result?.assistantMessage?.trim() || run.message?.trim() ||
     run.result?.summary?.trim() || "処理結果を取得できませんでした。条件をもう一度指定してください。";
   const runId = run.id || run.runId;
-  if (["queued", "running"].includes(run.status)) return { text: "DeskNetsで予定を確認しています。「状況を確認して」と送ると結果を確認できます。" };
+  if (["queued", "running"].includes(run.status)) return { text: TEAMS_DESKNETS_WAIT_MESSAGE };
   if (runId && run.result?.approvalRequest && run.status !== "failed" && run.status !== "cancelled") {
     return { text: `${message}\n\nまだ予定は登録していません。確認画面で内容を確認し、DeskNets上の「追加」を手動で押して確定してください。`,
       confirmationUrl: teamsDeskNetsConfirmationUrl(runId, threadId) };
@@ -41,6 +42,7 @@ export function formatTeamsDeskNetsReply(run: DeskNetsAgentRunResponse, threadId
 export async function handleTeamsDeskNets(props: {
   message: string; userEmail: string | null; conversationId: string; activityId: string;
   conversationType?: string;
+  onWaiting?: (message: string) => Promise<void>;
 }): Promise<Reply | null> {
   const text = props.message.normalize("NFKC").trim();
   const asksKnowledge = /share\s*point|社内資料|社内文書|手順書|マニュアル|使い方|操作方法|Salesforce|セールスフォース/i.test(text);
@@ -67,7 +69,7 @@ export async function handleTeamsDeskNets(props: {
 
   // Cosmos lock protects repeated or concurrent Bot deliveries across workers.
   const lockId = `${id}-lock`;
-  const lock = { id: lockId, userId: owner.userId, type: "TEAMS_DESKNETS_LOCK", token: randomUUID(), expiresAt: Date.now() + 90000, ttl: 120 };
+  const lock = { id: lockId, userId: owner.userId, type: "TEAMS_DESKNETS_LOCK", token: randomUUID(), expiresAt: Date.now() + 420000, ttl: 480 };
   let lockEtag: string | undefined;
   const save = async (result: DeskNetsAgentRunResponse, messages: History): Promise<Reply> => {
     const reply = formatTeamsDeskNetsReply(result, owner.threadId);
@@ -83,7 +85,7 @@ export async function handleTeamsDeskNets(props: {
     catch (error) {
       if ((error as {code?: number}).code !== 409) throw error;
       const existing = (await container.item(lockId, owner.userId).read<typeof lock & {_etag: string}>()).resource;
-      if (!existing || existing.expiresAt > Date.now()) return { text: "予定調整を処理中です。しばらくしてから「状況を確認して」と送ってください。" };
+      if (!existing || existing.expiresAt > Date.now()) return { text: "予定調整を処理中です。結果判明したらお知らせします。" };
       lockEtag = (await container.item(lockId, owner.userId).replace(lock, { accessCondition: {type: "IfMatch", condition: existing._etag} })).resource?._etag;
     }
     // Refresh after locking so two messages cannot overwrite each other's history.
@@ -101,7 +103,11 @@ export async function handleTeamsDeskNets(props: {
       if (!["queued", "running"].includes(run.status) && !statusRequest.test(text)) {
         history.push({role: "assistant", content: `DeskNets：${run.result?.assistantMessage || run.message || "結果を確認しました。"}`});
         state.pendingRunId = undefined;
-      } else return await save(run, history);
+      } else {
+        if (!["queued", "running"].includes(run.status)) return await save(run, history);
+        await props.onWaiting?.(TEAMS_DESKNETS_WAIT_MESSAGE);
+        return await waitForResult(run, history);
+      }
     }
     let defaultFacilityQuery: string | undefined;
     const { resources } = await container.items.query<UserMemory>({
@@ -112,23 +118,30 @@ export async function handleTeamsDeskNets(props: {
     const uncertainReply = {text: "要求の開始状態を確認できません。自動再実行はしていません。しばらくしてから状況を確認してください。"};
     await container.items.upsert({id, userId: owner.userId, type: "TEAMS_DESKNETS_STATE", ttl: 86400,
       threadId: owner.threadId, updatedAt: Date.now(), history, deliveryUncertain: true, lastActivityId: props.activityId, lastReply: uncertainReply} satisfies State);
+    await props.onWaiting?.(TEAMS_DESKNETS_WAIT_MESSAGE);
     try {
       run = await requestTeamsDeskNets(owner, undefined, {prompt: text, conversationHistory: history,
         ...(defaultFacilityQuery ? {defaultFacilityQuery} : {})});
     } catch { return uncertainReply; }
     history.push({role: "user", content: text.slice(0, 12000)});
-    let reply = await save(run, history);
-    const runId = run.id || run.runId;
-    const waitUntil = Date.now() + 15000;
-    while (runId && ["queued", "running"].includes(run.status) && Date.now() < waitUntil) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      try { run = await requestTeamsDeskNets(owner, runId); }
-      catch { break; }
-      if (!["queued", "running"].includes(run.status)) reply = await save(run, history);
-    }
-    return reply;
+    await save(run, history);
+    return await waitForResult(run, history);
 
   } finally {
     if (lockEtag) await container.item(lockId, owner.userId).delete({accessCondition: {type: "IfMatch", condition: lockEtag}}).catch(() => undefined);
+  }
+
+  async function waitForResult(run: DeskNetsAgentRunResponse, history: History): Promise<Reply> {
+    if (!["queued", "running"].includes(run.status)) return formatTeamsDeskNetsReply(run, owner.threadId);
+    const runId = run.id || run.runId;
+    // Match AC's 330-second browser-run budget, including transport margin.
+    const waitUntil = Date.now() + 330000;
+    while (runId && Date.now() < waitUntil) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try { run = await requestTeamsDeskNets(owner, runId); }
+      catch { return {text: "DeskNetsの結果取得で通信エラーが発生しました。検索を自動で再実行していません。しばらくしてからもう一度お試しください。"}; }
+      if (!["queued", "running"].includes(run.status)) return await save(run, history);
+    }
+    return {text: "DeskNetsの検索に通常より時間がかかっています。検索は再実行していません。しばらくしてからもう一度お試しください。"};
   }
 }

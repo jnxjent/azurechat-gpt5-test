@@ -126,6 +126,25 @@ async function main() {
   agentResponses.push({id:'run7',status:'completed',result:{assistantMessage:'新しい候補です。'}});
   await service.handleTeamsDeskNets({...props,activityId:'15'});
   assert.equal(records.has(key(expiredLock.id,owner.userId)),false,'expired lock must recover and release');
+  // A run completing after the old 15-second limit delivers its result in the
+  // original turn, without a status message or a second scheduling POST.
+  const realNow=Date.now, realTimeout=global.setTimeout;
+  let elapsed=0, waiting=[], startedAfterNotice=false;
+  Date.now=()=>realNow()+elapsed;
+  global.setTimeout=(callback)=>realTimeout(callback,0);
+  const delayedProps={...props,conversationId:'delayed-conversation',activityId:'delayed',onWaiting:async message=>{waiting.push(message);}};
+  const countBefore=requests.length;
+  agentResponses.push(()=>{startedAfterNotice=waiting.length===1;return {id:'delayed-run',status:'running'};});
+  agentResponses.push(()=>{elapsed+=20000;return {id:'delayed-run',status:'running'};});
+  agentResponses.push(()=>{elapsed+=40000;return {id:'delayed-run',status:'completed',result:{assistantMessage:'来週の候補です。'}};});
+  try {
+    const delivered=await service.handleTeamsDeskNets(delayedProps);
+    assert.equal(startedAfterNotice,true,'waiting notice must precede scheduling work');
+    assert.deepEqual(waiting,['少々お待ちください。結果判明したらお知らせします。']);
+    assert.ok(delivered.text.includes('来週の候補です。'));
+    assert.equal(requests.slice(countBefore).filter(r=>r.method==='POST').length,1);
+    assert.equal(requests.slice(countBefore).filter(r=>r.method==='GET').length,2);
+  } finally {Date.now=realNow;global.setTimeout=realTimeout;}
   const valid='https://desknets.midac.jp/dneo/dneo.cgi?cmd=schindex#cmd=schaddtarget&date=20300101';
   assert.equal(handoff.validatedDeskNetsHandoffUrl(valid),valid);
   for (const url of ['https://evil.test/dneo/dneo.cgi?cmd=schindex#cmd=schaddtarget',valid.replace('https:','http:'),valid.replace('schaddtarget','delete'),valid.replace('desknets.midac.jp','user@desknets.midac.jp')]) assert.throws(()=>handoff.validatedDeskNetsHandoffUrl(url));
