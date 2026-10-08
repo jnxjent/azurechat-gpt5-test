@@ -26,6 +26,7 @@ jobs:
           npm ci
           node scripts/test-memory-poc.cjs
           node scripts/test-salesforce-routing.cjs
+          node scripts/test-teams-desknets.cjs
           DISABLE_SYSTEM_FONTS_LOAD=1 node scripts/test-ppt-output-regression.cjs
           node scripts/test-chat-image-multipart.cjs
           node scripts/test-web-ppt-attachment-routing.cjs

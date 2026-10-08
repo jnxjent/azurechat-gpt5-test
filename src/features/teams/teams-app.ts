@@ -25,6 +25,7 @@ import {
 } from "./teams-file-service";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
 import { resolveSalesforceRoute } from "@/features/common/services/salesforce-routing";
+import { handleTeamsDeskNets } from "./teams-desknets-service";
 import {
   isTeamsSalesforceConfigured,
   queryTeamsSalesforce,
@@ -185,6 +186,23 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
       // The LLM may decide to use ACL-aware internal search after this routing
       // step, so resolve the Teams member before entering the chat service.
       const userEmail = await resolveActivityUserEmail({ activity, api });
+      const scheduling = await handleTeamsDeskNets({
+        message: messageText, userEmail, conversationId, activityId,
+        conversationType: activity.conversation?.conversationType === undefined ? undefined : String(activity.conversation.conversationType),
+      });
+      if (scheduling) {
+        await send(scheduling.text);
+        if (scheduling.confirmationUrl) await send({
+          type: "message", attachments: [{ contentType: "application/vnd.microsoft.card.adaptive", content: {
+            type: "AdaptiveCard", version: "1.4",
+            body: [{type: "TextBlock", text: "DeskNetsで予定を最終確認", weight: "Bolder", wrap: true},
+              {type: "TextBlock", text: "ACと同じアカウントで開いてください。最終登録はDeskNets上の「追加」で行います。", wrap: true}],
+            actions: [{type: "Action.OpenUrl", title: "予定内容を確認", url: scheduling.confirmationUrl}],
+          }}],
+        });
+        await recordCompletedTeamsTurn({conversationId, activityId, teamsUserId});
+        return;
+      }
       const salesforceAllowed = isSalesforceAllowedEmail(userEmail);
       const salesforceRouting = resolveSalesforceRoute({
         message: messageText,
