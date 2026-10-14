@@ -27,6 +27,10 @@ function loadOfficeService() {
   loaded.paths = Module._nodeModulePaths(path.dirname(fileName));
   const originalRequire = loaded.require.bind(loaded);
   loaded.require = (request) => {
+    if (request === "@/features/pptx/excel-table-slide") {
+      return loadTypeScriptModule("features/pptx/excel-table-slide.ts", {});
+    }
+
     if (request === "server-only") return {};
     if (request === "@/features/common/services/azure-storage") {
       return {
@@ -867,7 +871,53 @@ async function testNewDeckWithLogoAndFaithfulPdf() {
   } finally { global.fetch=originalFetch; }
 }
 
-testPdfTranslationExecutionAndFollowup()
+async function testExcelTableSlide() {
+  const XLSX = require('xlsx');
+  const file = { extension: 'xlsx', fileName: '経営会議.xlsx', savedAt: Date.now(), size: 100, url: 'https://example.test/meeting.xlsx' };
+  const request = parseTeamsOfficeRequest('見栄えのいいPPTにして\n添付ファイル: 経営会議.xlsx');
+  assert.equal(request.action, 'excel_table_slide');
+  const blueRequest = parseTeamsOfficeRequest('全体を青色で見栄えのいいPPT1枚にして\n添付ファイル: 経営会議.xlsx');
+  assert.equal(blueRequest?.action, 'excel_table_slide');
+  assert.equal(blueRequest.paletteKey, 'blue_sky');
+  assert.equal(parseTeamsOfficeRequest('7でお願いします')?.action, 'edit_latest_ppt_color');
+  assert.equal(parseTeamsOfficeRequest('添付の表をスライド1枚にまとめて\n添付ファイル: 経営会議.xlsx').action, 'excel_table_slide');
+  assert.notEqual(parseTeamsOfficeRequest('10枚のPPTを作成して\n添付ファイル: 経営会議.xlsx')?.action, 'excel_table_slide');
+  assert.notEqual(parseTeamsOfficeRequest('このPPTの色を変えて\n添付ファイル: 経営会議.xlsx')?.action, 'excel_table_slide');
+  assert.notEqual(parseTeamsOfficeRequest('見栄えのいいPPTにして\n添付ファイル: source.pdf')?.action, 'excel_table_slide');
+  const originalFetch = global.fetch;
+  const calls = [];
+  let rows = [['項目','現状','案1'],['会議目的','報告','議論']];
+  global.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null });
+    if (String(url) === file.url) {
+      const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), 'Sheet1');
+      return { ok: true, arrayBuffer: async () => XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ downloadUrl: 'https://example.test/meeting.pptx', fileName: '経営会議.pptx' }) };
+  };
+  try {
+    const run = uploadedFiles => executeTeamsOfficeRequest({ request, conversationId: 'excel-table-test', uploadedFiles });
+    assert.match(await run([]), /Excelを1件添付/);
+    assert.match(await run([file, { ...file, fileName: '別.xlsx' }]), /複数/);
+    assert.equal(calls.length, 0);
+    assert.match(await run([file]), /meeting\.pptx/);
+    assert.equal(calls[0].url, file.url);
+    assert.equal(calls[1].body.action, 'excel_table_slide');
+    assert.deepEqual(calls[1].body.table.rows, [['会議目的','報告','議論']]);
+    assert.ok(calls[1].body.threadId.startsWith('teams-'));
+    calls.length = 0;
+    await executeTeamsOfficeRequest({ request: blueRequest, conversationId: 'excel-blue-test', uploadedFiles: [file] });
+    assert.equal(calls[1].body.palette, 'blue_sky');
+    calls.length = 0;
+    rows = [['項目','現状','案1'], ...Array.from({length: 15}, (_, i) => [`項目${i}`, '短い', '短い'])];
+    assert.match(await run([file]), /1枚に収まりません/);
+    assert.equal(calls.length, 1, 'oversized table must not call generation API');
+  } finally { global.fetch = originalFetch; }
+}
+
+testExcelTableSlide()
+  .then(testPdfTranslationExecutionAndFollowup)
   .then(testWordTranslationExecution)
   .then(testWebGroundedPptAndLogoFollowup)
   .then(testExecutiveSharePointPptRenderingOptions)

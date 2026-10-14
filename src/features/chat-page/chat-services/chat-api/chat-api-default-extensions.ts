@@ -1,5 +1,8 @@
 // src/features/chat-page/chat-services/chat-api/chat-api-default-extensions.ts
 "use server";
+import { layoutExcelTableSlide, parseExcelTable } from "@/features/pptx/excel-table-slide";
+import { isExcelTableToSlideRequest } from "@/features/pptx/output-intent";
+
 import "server-only";
 import { extractPresentationCompanyName, assertCompanyIdentity, isCompanySearchResult } from "@/features/pptx/company-identity";
 
@@ -1759,6 +1762,26 @@ export const GetDefaultExtensions = async (props: {
       name: "convert_doc_to_pptx",
     },
   });
+
+  const excelTableSource = isExcelTableToSlideRequest(props.userMessage)
+    ? await findLatestUploadedExcel(props.chatThread.id)
+    : null;
+  if (excelTableSource) defaultExtensions.push({
+    type: "function",
+    function: {
+      function: async () => await executeExcelTableToSlide(props.chatThread, excelTableSource, resolvePptxPaletteInstruction(props.userMessage)?.paletteKey),
+      parse: (input: string) => JSON.parse(input || "{}"),
+      parameters: { type: "object", properties: {}, required: [] },
+      description:
+        "この会話にアップロードされたExcelの表（比較表など）を、見栄えのよいPowerPointスライド1枚に清書するツール。\n" +
+        "使用タイミング：最新の添付がExcelで、ユーザーが「見栄えのいいPPTにして」「1枚のスライドにして」と求めた場合のみ。\n" +
+        "セルの文言は変更しない。複数枚のPPT作成やPPT編集には使わないこと。\n" +
+        "ツールが返した downloadUrl はUIが自動的にダウンロードボタンとして表示するため、URLを再出力せず完了を一言で伝えるだけでよい。",
+      name: "excel_table_to_slide",
+    },
+  });
+
+
 
   // ★ SharePoint SL文書をPPTに変換するツール
   defaultExtensions.push({
@@ -5316,6 +5339,57 @@ async function executeCreatePptx(
 }
 
 // ---------------- ドキュメント → PPTX 変換（Vision API使用） ----------------
+async function findLatestUploadedExcel(chatThreadId: string): Promise<{ name: string } | null> {
+  const docs = await FindAllChatDocuments(chatThreadId);
+  if (docs.status !== "OK") return null;
+  const latest = [...docs.response].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  return latest && /\.(?:xlsx|xlsm|xls)$/i.test(latest.name) ? { name: latest.name } : null;
+}
+
+async function executeExcelTableToSlide(chatThread: ChatThreadModel, source: { name: string }, paletteKey?: string) {
+  const baseUrl = (
+    process.env.NEXTAUTH_URL ||
+    (process.env.WEBSITE_HOSTNAME ? `https://${process.env.WEBSITE_HOSTNAME}` : "http://localhost:3000")
+  ).replace(/\/+$/, "");
+  try {
+    const sas = await GenerateSasUrl("dl-link", `${chatThread.id}/${source.name}`);
+    if (sas.status !== "OK") return { error: "添付されたExcelファイルを取得できませんでした。" };
+    const fileRes = await fetch(sas.response, { signal: AbortSignal.timeout(30_000) });
+    if (!fileRes.ok) return { error: `Excelファイルの取得に失敗しました: HTTP ${fileRes.status}` };
+    const baseName = source.name.replace(/\.(?:xlsx|xlsm|xls)$/i, "") || "表スライド";
+    const table = parseExcelTable(Buffer.from(await fileRes.arrayBuffer()), baseName);
+    if (!table) {
+      return { error: "Excelから表（見出し行＋6列・15項目以内）を読み取れませんでした。複数枚のPPTにする場合は、その旨を指定してください。" };
+    }
+    if (!layoutExcelTableSlide(table)) {
+      return { error: "表の文字量が多く、スライド1枚に読みやすい文字サイズで収まりません。項目を絞るか、複数枚のPPTとして作成するよう指定してください。" };
+    }
+    console.log("[excel_table_to_slide] table parsed", {
+      columns: table.headers.length, rows: table.rows.length, baseline: table.baselineColumn,
+    });
+    const res = await fetch(`${baseUrl}/api/gen-pptx`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "excel_table_slide", table, threadId: chatThread.id, fileBaseName: baseName, palette: paletteKey }),
+    });
+    if (!res.ok) {
+      console.error("[excel_table_to_slide] gen-pptx failed:", res.status, await res.text().catch(() => ""));
+      return { error: `PowerPoint生成に失敗しました: HTTP ${res.status}` };
+    }
+    const result = await res.json();
+    if (!result?.downloadUrl) return { error: "ダウンロードURLが取得できませんでした。" };
+    return {
+      downloadUrl: result.downloadUrl,
+      fileName: result.fileName,
+      displayName: result.fileName,
+      message: "Excelの表をスライド1枚に清書しました。",
+    };
+  } catch (e: any) {
+    console.error("[excel_table_to_slide] error:", e);
+    return { error: "PowerPoint生成中にエラーが発生しました: " + String(e?.message ?? e) };
+  }
+}
+
 async function executeConvertDocToPptx(
   args: {
     fileUrl: string;

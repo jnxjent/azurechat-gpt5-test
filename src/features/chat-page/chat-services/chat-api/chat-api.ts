@@ -27,7 +27,7 @@ import {
 import { LoadLatestImageAttachment, UploadImageToStore } from "../chat-image-service";
 import { LoadPendingPptxEdit } from "../pptx-pending-edit-service";
 import { resolvePptxPaletteInstruction } from "@/features/pptx/palette";
-import { isExplicitPptOutputRequest, isNewPptCreationRequest, isAttachedPptConversionRequest, resolveOfficeChatRoute } from "@/features/pptx/output-intent";
+import { isExplicitPptOutputRequest, isNewPptCreationRequest, isAttachedPptConversionRequest, isExcelTableToSlideRequest, resolveOfficeChatRoute } from "@/features/pptx/output-intent";
 import { ChatThreadModel, UserPrompt } from "../models";
 import { mapOpenAIChatMessages } from "../utils";
 import { GetDefaultExtensions } from "./chat-api-default-extensions";
@@ -223,7 +223,10 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
       mode: resolvedMode,
     }),
   ]);
-  const attachedPdfConversion = explicitPptRequest && !newPptRequest &&
+  const latestDoc = [...docs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  const excelTableSlideRequest = !!latestDoc && /\.(?:xlsx|xlsm|xls)$/i.test(latestDoc.name) &&
+    isExcelTableToSlideRequest(props.message);
+  const attachedPdfConversion = !excelTableSlideRequest && explicitPptRequest && !newPptRequest &&
     /添付|アップロード|PDF|この画像|このファイル/i.test(props.message) &&
     !/参考|追記|拡充|肉付け/i.test(props.message) &&
     docs.some(doc => /\.pdf$/i.test(doc.name));
@@ -248,7 +251,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
       return sas.response;
     }));
   }
-  const attachedImageConversion = !attachedPdfConversion && !pptxAssetPlacementRequest &&
+  const attachedImageConversion = !excelTableSlideRequest && !attachedPdfConversion && !pptxAssetPlacementRequest &&
     isAttachedPptConversionRequest(props.message) && imageConversionCandidates.length > 0;
   if (attachedImageConversion) {
     const imageConversionSources = await Promise.all(imageConversionCandidates.map(async (source, index) => {
@@ -287,7 +290,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
 
   const chatType: ChatTypes = resolveOfficeChatRoute({
     explicitPptRequest,
-    requiredTools: salesforceRouting.route !== "normal" || shouldUseImageEditTools || roomAvailabilityRequest,
+    requiredTools: excelTableSlideRequest || salesforceRouting.route !== "normal" || shouldUseImageEditTools || roomAvailabilityRequest,
     imageCount: imageAttachmentUrls.length,
     documentCount: docs.length,
   });
@@ -326,7 +329,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
         userMessage: props.message,
         history,
         extensions: extension,
-        requiredToolName: (attachedPdfConversion || attachedImageConversion ? "convert_doc_to_pptx" : newPptRequest ? "create_pptx" : requiredImageToolName) ??
+        requiredToolName: (excelTableSlideRequest ? "excel_table_to_slide" : attachedPdfConversion || attachedImageConversion ? "convert_doc_to_pptx" : newPptRequest ? "create_pptx" : requiredImageToolName) ??
           (roomAvailabilityRequest ? "desknets_schedule_agent" : undefined),
         loginEmail: user.email,
         salesforceRouting,
