@@ -202,6 +202,7 @@ const ApprovalCard = ({
       timeZone: "Asia/Tokyo",
       month: "numeric",
       day: "numeric",
+      weekday: "short",
       hour: "2-digit",
       minute: "2-digit",
     }).format(new Date(value));
