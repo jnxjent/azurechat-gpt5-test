@@ -10,6 +10,7 @@ const services = {
   getCurrentUser: async () => ({ name: 'Local test', email: 'local@example.test' }),
   EnsureChatThreadOperation: async () => ok({ id: 'thread-local', extension: [], personaMessage: '' }),
   listUserMemories: async () => [], handleMemoryChatCommand: async () => null,
+  prepareAutomaticMemory: async () => '本人用メモリー：回答は簡潔にする。',
   resolveMemoryRelevance: async () => ({ selected: [] }),
   selectMemories: () => [], formatMemoryContext: () => '',
   memoryReferenceLabel: () => '',
@@ -50,6 +51,7 @@ async function main() {
     captured = undefined; loads = 0;
     await ChatAPIEntry({ id: 'thread-local', message, multimodalImage: image }, new AbortController().signal);
     assert(captured, 'actual Web entry must reach extension routing');
+    assert(captured.chatThread.personaMessage.includes('本人用メモリー：回答は簡潔にする。'), 'automatic memory reaches the Web answer model');
   };
   stored = { contentType: 'image/png', buffer: Buffer.from('image'), fileName: 'poster.png' };
   for (const message of ['添付ファイルをPPTにして', 'この画像を編集可能なPPTに変換して', '添付をPowerPointに変換して']) {
