@@ -220,7 +220,9 @@ async function run() {
     message:
       "部署共通フォルダーの「可能性調査」のフォルダーで、各候補地のメリットデメリットを比較表にして",
     userEmail: "USER@example.com",
+    automaticMemoryContext: "本人用メモリー検証：営業報告は結論・根拠・次の行動の順。",
   });
+  assert.ok(completionCalls[0].messages[0].content.includes("本人用メモリー検証"));
   assert.equal(scopedReply.type, "reply");
   assert.match(scopedReply.text, /比較結果です。\[1\]/);
   assert.match(scopedReply.text, /候補地資料\.docx/);
@@ -253,6 +255,7 @@ async function run() {
     userEmail: "USER@example.com",
   });
   assert.equal(generalReply.text, "東京は日本の首都です。");
+  assert.ok(!completionCalls.at(-1).messages[0].content.includes("本人用メモリー検証"), "another conversation must not inherit personal memory context");
   assert.equal(searchCalls.length, 1);
 
   await searchService.searchTeamsKnowledgeWithTarget({

@@ -54,11 +54,6 @@ export const MainMenu = async () => {
               <Book {...menuIconProps} />
             </MenuLink>
           </MenuItem>
-          <MenuItem tooltip="メモ">
-            <MenuLink href="/memories" ariaLabel="メモを管理">
-              <FileText {...menuIconProps} />
-            </MenuLink>
-          </MenuItem>
           <MenuItem tooltip="Skills">
             <MenuLink href="/skills" ariaLabel="Skillsを管理">
               <FileText {...menuIconProps} />

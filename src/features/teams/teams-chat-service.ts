@@ -36,6 +36,8 @@ export async function createTeamsChatReply(props: {
   userEmail?: string | null;
   forceKnowledgeSearch?: boolean;
   attachmentContext?: string;
+  /** Prepared by the authenticated, personal-chat-only entry point. Never from activity text. */
+  automaticMemoryContext?: string;
 }): Promise<TeamsChatResult> {
   const message = props.message.trim();
   if (!message) {
@@ -55,6 +57,7 @@ export async function createTeamsChatReply(props: {
   assertAzureOpenAIConfiguration();
 
   const history = conversations.get(props.conversationId) ?? [];
+  const automaticMemoryContext = props.automaticMemoryContext ?? "";
   const braveRequest = resolveBraveSearchRequest(message);
   const webSearch = braveRequest.enabled
     ? await searchBraveWeb({
@@ -77,7 +80,7 @@ export async function createTeamsChatReply(props: {
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
-      content: `${baseSystemPrompt}\n\n${TEAMS_INTERNAL_SEARCH_INSTRUCTIONS}`,
+      content: `${baseSystemPrompt}\n\n${TEAMS_INTERNAL_SEARCH_INSTRUCTIONS}${automaticMemoryContext ? `\n\n${automaticMemoryContext}` : ""}`,
     },
     ...history,
     { role: "user", content: userContent },

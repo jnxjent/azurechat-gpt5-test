@@ -47,9 +47,7 @@ import { createDeskNetsAgentTool } from "@/features/desknets-agent/desknets-agen
 import {
   shouldRouteToDeskNetsAgent,
 } from "@/features/desknets-agent/desknets-agent-intent";
-import { listUserMemories } from "@/features/memory/memory-service";
-import { handleMemoryChatCommand } from "@/features/memory/memory-chat-handler";
-import { formatMemoryContext, memoryReferenceLabel, selectMemories } from "@/features/memory/memory-rules";
+import { prepareAutomaticMemory } from "@/features/memory/automatic-memory-service";
 
 import { prepareSkillsForChat } from "@/features/skills/skill-chat-handler";
 import { skillAuthoringInstructions } from "@/features/skills/skill-chat-authoring";
@@ -161,12 +159,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
       headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
     });
   }
-  const userMemories = await listUserMemories();
-  const memoryCommandResponse = await handleMemoryChatCommand({
-    message: props.message, threadId: currentChatThread.id, userName: user.name, memories: userMemories,
-  });
-  if (memoryCommandResponse) return memoryCommandResponse;
-  const selectedMemories = selectMemories(userMemories, props.message);
+  const automaticMemoryContext = await prepareAutomaticMemory(props.message, signal);
   const hasSalesforceExtension =
     Boolean(SF_EXTENSION_ID) &&
     currentChatThread.extension.includes(SF_EXTENSION_ID);
@@ -328,8 +321,8 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   if (selectedSkills.length) currentChatThread.personaMessage += `\n\n${formatSkillContext(selectedSkills)}`;
 
   currentChatThread.personaMessage = `${CHAT_DEFAULT_SYSTEM_PROMPT} \n\n ${currentChatThread.personaMessage}`;
-  if (selectedMemories.length) {
-    currentChatThread.personaMessage += `\n\n${formatMemoryContext(selectedMemories)}`;
+  if (automaticMemoryContext) {
+    currentChatThread.personaMessage += `\n\n${automaticMemoryContext}`;
   }
   executionChatThread.personaMessage = currentChatThread.personaMessage;
 
@@ -385,7 +378,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   }
 
   const readableStream = OpenAIStream({ runner, chatThread: currentChatThread,
-    memoryReference: [memoryReferenceLabel(selectedMemories), skillReferenceLabel(selectedSkills)].filter(Boolean).join("\n") });
+    memoryReference: skillReferenceLabel(selectedSkills) });
   return new Response(readableStream, {
     headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
   });

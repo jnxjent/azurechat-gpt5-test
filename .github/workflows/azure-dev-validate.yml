@@ -25,6 +25,8 @@ jobs:
           cd ./src
           npm ci
           node scripts/test-memory-poc.cjs
+          node scripts/test-automatic-memory.cjs
+          node scripts/test-teams-search-tool.cjs
           node scripts/test-skills.cjs
           node scripts/test-skill-search.cjs
           node scripts/test-skill-generator.cjs

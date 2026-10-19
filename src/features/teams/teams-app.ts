@@ -1,5 +1,6 @@
 import { isExcelTableToSlideRequest } from "@/features/pptx/output-intent";
 import "server-only";
+import { prepareTeamsAutomaticMemory } from "@/features/memory/automatic-memory-service";
 
 import { App } from "@microsoft/teams.apps";
 import { NextHttpAdapter } from "./next-http-adapter";
@@ -189,6 +190,10 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
       // The LLM may decide to use ACL-aware internal search after this routing
       // step, so resolve the Teams member before entering the chat service.
       const userEmail = await resolveActivityUserEmail({ activity, api });
+      const automaticMemoryContext = await prepareTeamsAutomaticMemory({
+        verifiedEmail: userEmail, conversationType: String(activity.conversation?.conversationType ?? ""),
+        message: messageText, activityId,
+      });
       const scheduling = await handleTeamsDeskNets({
         message: messageText, userEmail, conversationId, activityId,
         onWaiting: async message => { await send(message); },
@@ -296,6 +301,7 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         conversationId,
         message: messageText,
         userEmail,
+        automaticMemoryContext,
         forceKnowledgeSearch: salesforceRouting.route === "knowledge",
         attachmentContext,
       });
