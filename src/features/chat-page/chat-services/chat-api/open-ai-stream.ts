@@ -145,6 +145,7 @@ export const OpenAIStream = (props: {
   runner: ChatCompletionStreamingRunner;
   chatThread: ChatThreadModel;
   memoryReference?: string;
+  initialToolResults?: string[];
 }) => {
   const encoder = new TextEncoder();
 
@@ -178,7 +179,7 @@ export const OpenAIStream = (props: {
       let finalized = false;
       // functionCallResult をまとめて収集し finalContent で DB 保存する
       // （revalidate 後の props.messages でも tool メッセージが残るようにするため）
-      const pendingToolResults: string[] = [];
+      const pendingToolResults: string[] = [...(props.initialToolResults ?? [])];
 
       const finalizeStream = async (content: string) => {
         if (finalized) return;

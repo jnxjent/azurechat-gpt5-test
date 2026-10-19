@@ -59,6 +59,11 @@ export const MainMenu = async () => {
               <FileText {...menuIconProps} />
             </MenuLink>
           </MenuItem>
+          <MenuItem tooltip="Skills">
+            <MenuLink href="/skills" ariaLabel="Skillsを管理">
+              <FileText {...menuIconProps} />
+            </MenuLink>
+          </MenuItem>
           {user.isAdmin && (
             <>
               <MenuItem tooltip="reporting">

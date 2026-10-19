@@ -6,6 +6,7 @@ const ts = require('typescript');
 let stored, docs = [], captured, loads = 0;
 const ok = response => ({ status: 'OK', response });
 const services = {
+  prepareSkillsForChat: async () => ({selected:[]}), shouldRunSkillSearch: () => false, skillAuthoringInstructions: () => undefined, skillReferenceLabel: () => "", formatSkillContext: () => "",
   getCurrentUser: async () => ({ name: 'Local test', email: 'local@example.test' }),
   EnsureChatThreadOperation: async () => ok({ id: 'thread-local', extension: [], personaMessage: '' }),
   listUserMemories: async () => [], handleMemoryChatCommand: async () => null,
@@ -78,6 +79,16 @@ async function main() {
   assert.equal(captured.requiredToolName, 'edit_existing_image');
   await run('今のPPTのロゴを添付Logoに差し替えて', 'data:image/png;base64,aW1hZ2U=');
   assert.equal(captured.requiredToolName, 'edit_pptx');
+  services.prepareSkillsForChat = async () => ({selected:[{title:'取引先情報',version:1}]});
+  services.shouldRunSkillSearch = count => count > 0;
+  let skillExecution;
+  services.runSkillSearch = async props => {skillExecution=props;return {directContent:'固定候補表',citationResults:['{"integration":"skill_search_account_candidates","records":[]}']};};
+  const saved=[];services.CreateChatMessage = async props => {saved.push(props);return ok({});};
+  captured=undefined;
+  const selected=await ChatAPIEntry({id:'thread-local',message:'Skill「取引先情報」で調べて',multimodalImage:''},new AbortController().signal);
+  assert.ok(skillExecution);assert.equal(captured,undefined,'explicit Skill takes its own route');
+  assert.ok((await selected.text()).includes('固定候補表'));
+  assert.equal(saved.at(-1).role,'assistant');assert.equal(saved.at(-2).role,'tool');
   console.log('Web PPT attachment routing passed (actual ChatAPIEntry, storage/model doubles).');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

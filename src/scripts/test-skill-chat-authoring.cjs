@@ -1,0 +1,23 @@
+const assert=require('node:assert/strict');const fs=require('node:fs');const ts=require('typescript');const path=require('node:path');
+const cache=new Map();function load(name){if(cache.has(name))return cache.get(name);const module={exports:{}};const source=ts.transpileModule(fs.readFileSync(path.join(__dirname,'../features/skills',name+'.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;new Function('require','module','exports',source)(id=>id.startsWith('./')?load(id.slice(2)):require(id),module,module.exports);cache.set(name,module.exports);return module.exports;}
+const rules=load('skill-chat-authoring');
+const content='お客様訪問前ブリーフィングSkill\n\nSkill名\n\nお客様訪問前ブリーフィング\n\n目的\n\n訪問前に顧客情報を整理する。\n\n必須入力\n\n顧客企業名\n\n実行手順\n\n社内情報とWebを確認し、不明な点は推測しない。\n\n出力フォーマット\n\n会社概要、商談状況、訪問時の話題候補。';
+const draft=rules.extractChatSkillDraft(content);assert.equal(draft.title,'お客様訪問前ブリーフィング');assert.equal(draft.content,content);
+assert.equal(rules.extractChatSkillDraft('Skillについて質問です。どのような目的で使いますか？'),undefined);
+assert.equal(rules.extractChatSkillDraft('第13問（最終）\nSkillの文体は？'),undefined);
+assert.equal(rules.isSkillAuthoringRequest('Skill「取引先情報」を使って、レポートを作成して'),false);
+assert.ok(rules.skillAuthoringInstructions('お客様訪問前ブリーフィングのSkillを作りたい',[]).includes('質問 n/5'));
+const history=[{id:'start',role:'user',content:'Skillを13問の質問で作成して'},{id:'q1',role:'assistant',content:'第1問\n目的は？'},{id:'a',role:'user',content:'訪問準備'},{id:'q13',role:'assistant',content:'第13問（最終）\nSkillの文体は？'}];
+assert.equal(rules.skillChatQuestionProgress(history[1].content,history,'q1'),'1/13');
+assert.equal(rules.skillChatQuestionProgress(history[1].content,[{...history[0],content:'Skillを作成して'},...history.slice(1)],'q1'),'1/13','old questions infer the total from the final question');
+assert.equal(rules.extractChatSkillDraft(content.replace('Skill名\n\nお客様訪問前ブリーフィング','Skill名：お客様訪問前ブリーフィング')).title,'お客様訪問前ブリーフィング');
+assert.equal(rules.skillChatQuestionProgress(history[3].content,history,'q13'),'13/13');
+assert.ok(rules.skillAuthoringInstructions('１',history).includes('追加質問せず'));
+assert.equal(rules.skillAuthoringInstructions('普通の質問',[]),'');
+assert.equal(rules.skillChatQuestionProgress('第2問',[]),undefined);
+const dates=[{role:'user',content:'Skillを作成して'},{role:'assistant',content:'2026/10/16の説明です。第1問'}];
+assert.ok(rules.skillAuthoringInstructions('はい',dates).includes('質問 n/5'),'a date must not be mistaken for a question count');
+const sessions=[...history,{id:'start2',role:'user',content:'別のSkillを5問で作成して'},{id:'newq',role:'assistant',content:'質問 1/5\n目的は？'}];
+assert.equal(rules.skillChatQuestionProgress(sessions.at(-1).content,sessions,'newq'),'1/5');
+assert.equal(rules.skillChatQuestionProgress(history[1].content,sessions,'q1'),'1/13');
+console.log('PASS chat Skill authoring: supplied draft, save eligibility, creation versus use, fixed question totals, final question, full-width answers and session isolation');

@@ -25,6 +25,11 @@ jobs:
           cd ./src
           npm ci
           node scripts/test-memory-poc.cjs
+          node scripts/test-skills.cjs
+          node scripts/test-skill-search.cjs
+          node scripts/test-skill-generator.cjs
+          node scripts/test-skill-chat-authoring.cjs
+          node scripts/test-fiscal-period.cjs
           node scripts/test-salesforce-routing.cjs
           node scripts/test-teams-sf-image-fixes.cjs
           node scripts/test-image-upload-routing.cjs

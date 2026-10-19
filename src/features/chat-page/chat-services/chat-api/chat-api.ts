@@ -12,7 +12,7 @@ import {
   resolveSalesforceRoute,
 } from "@/features/common/services/salesforce-routing";
 import { FindAllExtensionForCurrentUser } from "@/features/extensions-page/extension-services/extension-service";
-import { CHAT_DEFAULT_SYSTEM_PROMPT } from "@/features/theme/theme-config";
+import { AI_NAME, CHAT_DEFAULT_SYSTEM_PROMPT } from "@/features/theme/theme-config";
 import { ChatCompletionStreamingRunner } from "openai/resources/beta/chat/completions";
 import { ChatApiRAG } from "../chat-api/chat-api-rag";
 import { FindAllChatDocuments } from "../chat-document-service";
@@ -50,6 +50,14 @@ import {
 import { listUserMemories } from "@/features/memory/memory-service";
 import { handleMemoryChatCommand } from "@/features/memory/memory-chat-handler";
 import { formatMemoryContext, memoryReferenceLabel, selectMemories } from "@/features/memory/memory-rules";
+
+import { prepareSkillsForChat } from "@/features/skills/skill-chat-handler";
+import { skillAuthoringInstructions } from "@/features/skills/skill-chat-authoring";
+import { formatSkillContext, skillReferenceLabel } from "@/features/skills/skill-rules";
+import { shouldRunSkillSearch } from "@/features/skills/execution/skill-search-policy";
+import { runSkillSearch } from "@/features/skills/execution/skill-search-runner";
+import { isSkillSearchChoiceReply, readSelectedAccountSnapshot, resolveSkillSearchChoice, resolveSkillSearchPeriod } from "@/features/skills/execution/skill-search-continuation";
+import { readFiscalPeriod } from "@/features/skills/execution/skill-search-requirements";
 
 type ChatTypes = "extensions" | "chat-with-file" | "multimodal";
 
@@ -120,6 +128,39 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   }
   const currentChatThread = currentChatThreadResponse.response;
   const user = await getCurrentUser();
+  let skillsResult = await prepareSkillsForChat({
+    message: props.message, threadId: currentChatThread.id, userName: user.name,
+  });
+  if (skillsResult.response) return skillsResult.response;
+  let skillChoice;
+  if (!skillsResult.selected.length && shouldRunSkillSearch(1) && isSkillSearchChoiceReply(props.message)) {
+    skillChoice = resolveSkillSearchChoice(props.message, await _getHistory(currentChatThread));
+    if (skillChoice) skillsResult = await prepareSkillsForChat({ message: `Skill「${skillChoice.skillName}」を使って、${props.message}`, threadId: currentChatThread.id, userName: user.name });
+    if (skillsResult.response) return skillsResult.response;
+  }
+  if (!skillsResult.selected.length && shouldRunSkillSearch(1) && readFiscalPeriod(props.message)) {
+    const previous = await FindTopChatMessagesForCurrentUser(currentChatThread.id, 20);
+    if (previous.status === "OK") skillChoice = resolveSkillSearchPeriod(props.message, previous.response);
+    if (skillChoice) skillsResult = await prepareSkillsForChat({ message: `Skill「${skillChoice.skillName}」を使って、${props.message}`, threadId: currentChatThread.id, userName: user.name });
+    if (skillsResult.response) return skillsResult.response;
+  }
+  const selectedSkills = skillsResult.selected;
+  if (shouldRunSkillSearch(selectedSkills.length)) {
+    const history = await _getHistory(currentChatThread);
+    const choiceMessages = skillChoice ? await FindTopChatMessagesForCurrentUser(currentChatThread.id, 20) : undefined;
+    const selectedAccountRecord = skillChoice && choiceMessages?.status === "OK" ? readSelectedAccountSnapshot(choiceMessages.response, skillChoice.account.id) : undefined;
+    await CreateChatMessage({ name: user.name, content: props.message, role: "user", chatThreadId: currentChatThread.id });
+    const { runner, directContent, citationResults } = await runSkillSearch({ chatThread: currentChatThread, skills: selectedSkills, message: props.message, history, email: user.email, signal, selectedAccount: skillChoice?.account, originalRequest: skillChoice?.originalRequest, selectedAccountRecord });
+    if (directContent) {
+      for (const content of citationResults) await CreateChatMessage({ name: AI_NAME, content, role: "tool", chatThreadId: currentChatThread.id });
+      await CreateChatMessage({ name: AI_NAME, content: directContent, role: "assistant", chatThreadId: currentChatThread.id });
+      return new Response(`event: finalContent\ndata: ${JSON.stringify({ type: "finalContent", response: directContent })}\n\n`, { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" } });
+    }
+    if (!runner) throw new Error("Skill search response missing");
+    return new Response(OpenAIStream({ runner, initialToolResults: citationResults, chatThread: currentChatThread, memoryReference: skillReferenceLabel(selectedSkills) }), {
+      headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
+    });
+  }
   const userMemories = await listUserMemories();
   const memoryCommandResponse = await handleMemoryChatCommand({
     message: props.message, threadId: currentChatThread.id, userName: user.name, memories: userMemories,
@@ -282,6 +323,10 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
     });
   }
 
+  const skillGuidance = skillAuthoringInstructions(props.message, history);
+  if (skillGuidance) currentChatThread.personaMessage += `\n\n${skillGuidance}`;
+  if (selectedSkills.length) currentChatThread.personaMessage += `\n\n${formatSkillContext(selectedSkills)}`;
+
   currentChatThread.personaMessage = `${CHAT_DEFAULT_SYSTEM_PROMPT} \n\n ${currentChatThread.personaMessage}`;
   if (selectedMemories.length) {
     currentChatThread.personaMessage += `\n\n${formatMemoryContext(selectedMemories)}`;
@@ -340,7 +385,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   }
 
   const readableStream = OpenAIStream({ runner, chatThread: currentChatThread,
-    memoryReference: memoryReferenceLabel(selectedMemories) });
+    memoryReference: [memoryReferenceLabel(selectedMemories), skillReferenceLabel(selectedSkills)].filter(Boolean).join("\n") });
   return new Response(readableStream, {
     headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
   });
