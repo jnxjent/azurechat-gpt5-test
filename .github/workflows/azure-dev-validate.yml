@@ -34,6 +34,7 @@ jobs:
           node scripts/test-fiscal-period.cjs
           node scripts/test-salesforce-routing.cjs
           node scripts/test-canvas.cjs
+          node scripts/test-salesforce-clarification.cjs
           node scripts/test-teams-sf-image-fixes.cjs
           node scripts/test-image-upload-routing.cjs
           node scripts/test-teams-desknets.cjs

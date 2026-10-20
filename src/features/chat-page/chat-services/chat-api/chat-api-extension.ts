@@ -2,6 +2,7 @@
 import "server-only";
 
 import { OpenAIInstance } from "@/features/common/services/openai";
+import { salesforceClarificationStream } from "@/features/common/services/salesforce-clarification-stream";
 import { FindExtensionByID } from "@/features/extensions-page/extension-services/extension-service";
 import { RunnableToolFunction } from "openai/lib/RunnableFunction";
 import { ChatCompletionStreamingRunner } from "openai/resources/beta/chat/completions";
@@ -725,7 +726,7 @@ async function runSfDirect(props: {
     if(res.status===422) {
       const issue=await res.json();
       if(issue.needs_clarification&&typeof issue.clarification==="string") {
-        return openAI.beta.chat.completions.stream({model,stream:true,messages:[{role:"system",content:"検索は実行していません。次の確認事項だけを日本語で伝えてください。検索結果が0件だったとは言わないでください。"},{role:"user",content:issue.clarification.slice(0,400)}]},{signal});
+        return salesforceClarificationStream(issue.clarification,signal);
       }
       sfError="Salesforce request needs clarification";
     } else if (!res.ok) {
