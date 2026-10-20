@@ -11,6 +11,7 @@ import { ChatThreadModel } from "../models";
 import { ExtensionSimilaritySearch, SimpleSearch, DocumentSearchResponse } from "../azure-ai-search/azure-ai-search";
 import {
   buildSalesforceGatewayQuery,
+  isSelfContainedCanvasRequest,
   type SalesforceRoutingResult,
 } from "@/features/common/services/salesforce-routing";
 import {
@@ -269,9 +270,16 @@ export const ChatApiExtensions = async (props: {
 
   const model = resolveModelForExtensions(chatThread);
 
+  if(isSelfContainedCanvasRequest(userMessage)) {
+    return openAI.beta.chat.completions.stream({model,stream:true,messages:[
+      {role:"system",content:"入力された架空データだけを使って日本語のCanvas用レポートをMarkdownで作成してください。過去の商談や会話を混ぜず、外部検索は行いません。単位・対象期間・出典を明記し、元データをMarkdownの表で保持してください。数値を創作・変更せず、未取得は未取得、実際の0は0としてください。保存・外部取得したとは主張しないでください。"},
+      {role:"user",content:userMessage}
+    ]},{signal});
+  }
+
   if (salesforceRouting.route === "salesforce") {
     console.log(
-      "[SF] Explicit Salesforce data request authorized. Using direct NL gateway."
+      "[SF] Salesforce data route authorized. Using direct NL gateway."
     );
     return runSfDirect({
       chatThread,
@@ -714,7 +722,13 @@ async function runSfDirect(props: {
       },
     });
 
-    if (!res.ok) {
+    if(res.status===422) {
+      const issue=await res.json();
+      if(issue.needs_clarification&&typeof issue.clarification==="string") {
+        return openAI.beta.chat.completions.stream({model,stream:true,messages:[{role:"system",content:"検索は実行していません。次の確認事項だけを日本語で伝えてください。検索結果が0件だったとは言わないでください。"},{role:"user",content:issue.clarification.slice(0,400)}]},{signal});
+      }
+      sfError="Salesforce request needs clarification";
+    } else if (!res.ok) {
       sfError = `Salesforce gateway HTTP ${res.status}`;
       console.error("[SF] Gateway error", { status: res.status });
     } else {
@@ -733,6 +747,8 @@ async function runSfDirect(props: {
 
   let jsonSnippet = "";
   if (sfJson) {
+    // Keep the interpreted conditions and server-computed summary before detail rows.
+    if(sfJson.request_plan)sfJson={request_plan:sfJson.request_plan,analysis:sfJson.analysis,...sfJson};
     try {
       const raw = JSON.stringify(sfJson, null, 2);
       jsonSnippet =

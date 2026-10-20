@@ -9,7 +9,8 @@ import ChatMessageContentArea from "@/features/ui/chat/chat-message-area/chat-me
 import { useChatScrollAnchor } from "@/features/ui/chat/chat-message-area/use-chat-scroll-anchor";
 import { Download } from "lucide-react";
 import { useSession } from "next-auth/react";
-import { FC, useEffect, useRef } from "react";
+import { FC, useEffect, useRef, useState } from "react";
+import { CanvasPanel } from "@/features/canvas/canvas-panel";
 import { ExtensionModel } from "../extensions-page/extension-services/models";
 import { ChatHeader } from "./chat-header/chat-header";
 import {
@@ -39,6 +40,12 @@ const BLOB_URL_RE = /^https?:\/\/[^/]+\.blob\.core\.windows\.net\//i;
 export const ChatPage: FC<ChatPageProps> = (props) => {
   const { data: session } = useSession();
   const isAdmin = props.isAdmin;
+  const [canvas,setCanvas]=useState<{content?:string;key:number}|null>(null);
+  function openCanvas(content?:string) {
+    if(canvas && !window.confirm("Canvasを開き直します。未保存の変更がある場合は破棄されます。続けますか？"))return;
+    setCanvas({content,key:Date.now()});
+  }
+  useEffect(()=>setCanvas(null),[props.chatThread.id]);
 
   useEffect(() => {
     chatStore.initChatSession({
@@ -49,11 +56,23 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
   }, [props.messages, session?.user?.name, props.chatThread]);
 
   const { messages, loading, chatThreadId } = useChat();
+  const canvasWasGenerating=useRef(false);
+  useEffect(()=>{
+    const finished=canvasWasGenerating.current&&loading!=="loading";
+    canvasWasGenerating.current=loading==="loading";
+    if(!finished||canvas)return;
+    const lastUserIndex=messages.map(message=>message.role).lastIndexOf("user");
+    const lastUser=messages[lastUserIndex];
+    const answer=messages.slice(lastUserIndex+1).reverse().find(message=>message.role==="assistant"&&message.content.trim());
+    if(lastUser&&answer&&/(?:Canvas|キャンバス)\s*(?:に|で|へ).*(?:まとめ|作成|表示|整理)/i.test(lastUser.content))setCanvas({content:answer.content,key:Date.now()});
+  },[loading,messages,canvas]);
   const current = useRef<HTMLDivElement>(null);
   useChatScrollAnchor({ ref: current });
 
   return (
-    <main className="flex flex-1 relative flex-col">
+    <main className="relative flex h-dvh max-h-dvh min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex justify-end px-4 pt-2"><button type="button" onClick={()=>openCanvas()} className="rounded border px-3 py-1 text-sm">このチャットのCanvasを開く</button></div>
       <ChatHeader
         chatThread={props.chatThread}
         chatDocuments={props.chatDocuments}
@@ -98,6 +117,7 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
                 }
               >
                 <MessageContent message={message} />
+                {message.role==="assistant" && message.content.trim() && loading!=="loading" && <button type="button" onClick={()=>openCanvas(message.content)} className="not-prose mt-2 rounded border px-3 py-1 text-sm">上記内容のCanvasを開く</button>}
                 {assistantDownloadUrl && (
                   <div className="not-prose mt-2">
                     <a
@@ -119,6 +139,8 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
       </ChatMessageContainer>
       <DeskNetsCredentialRegistration />
       <ChatInput isAdmin={isAdmin} />
+      </div>
+      {canvas&&<CanvasPanel key={`${props.chatThread.id}:${canvas.key}`} threadId={props.chatThread.id} initialContent={canvas.content} onClose={()=>setCanvas(null)}/>}
     </main>
   );
 };

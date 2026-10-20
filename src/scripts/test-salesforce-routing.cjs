@@ -27,6 +27,13 @@ const access = loadTypeScriptModule(
   "features/common/services/salesforce-access.ts"
 );
 
+const canvasSample='以下の架空データをCanvasにまとめてください。\n月 今年実績 前年実績\n4月 120 100\n5月 未取得 0';
+assert.equal(routing.isSelfContainedCanvasRequest(canvasSample),true);
+assert.equal(routing.resolveSalesforceRoute({message:canvasSample,isSalesforceAllowed:true,hasSalesforceExtension:true,defaultToSalesforce:true}).route,'normal');
+assert.equal(routing.resolveSalesforceRoute({message:canvasSample,isSalesforceAllowed:false,hasSalesforceExtension:true,defaultToSalesforce:true}).route,'normal');
+assert.equal(routing.isSelfContainedCanvasRequest('Salesforceから売上を取得してCanvasにまとめて。2026年'),false);
+assert.equal(routing.resolveSalesforceRoute({message:'商談一覧を見せて',isSalesforceAllowed:true,hasSalesforceExtension:true,defaultToSalesforce:true}).route,'salesforce');
+
 const teamsReportCases = [
   ["SalesforceでJ＆T環境の進行中の商談を出してください", "salesforce"],
   ["SalesforceでJ＆T環境の成約した商談を出してください", "salesforce"],

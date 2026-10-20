@@ -1,5 +1,6 @@
 "use server";
 import "server-only";
+import { deleteCanvasForThread } from "@/features/canvas/canvas-service";
 
 import {
   getCurrentUser,
@@ -158,6 +159,7 @@ export const SoftDeleteChatThreadForCurrentUser = async (
         await HistoryContainer().items.upsert(itemToUpdate);
       });
 
+      await deleteCanvasForThread(chatThreadID);
       chatThreadResponse.response.isDeleted = true;
       await HistoryContainer().items.upsert(chatThreadResponse.response);
     }

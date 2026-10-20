@@ -26,6 +26,12 @@ export interface SalesforceRoutingResult {
   route: SalesforceRoute;
 }
 
+/** Explicit, supplied sample data must not inherit an SF chat's default source. */
+export function isSelfContainedCanvasRequest(message:string):boolean {
+  const text=normalizeMessage(message);
+  return /canvas|キャンバス/i.test(text) && /架空データ|サンプルデータ|テストデータ/.test(text) && /\d/.test(text) && !containsSalesforceMarker(text);
+}
+
 const KNOWLEDGE_SOURCE_PATTERN =
   /(?:share\s*point|シェアポイント|(?:azure\s*)?ai\s*search|AI検索|検索インデックス|社内(?:資料|文書|情報|データ|ナレッジ)|マニュアル|手順書|Q\s*&\s*A|\bQA\b|個人(?:ファイル|フォルダ(?:ー)?)|部署共通|部門共通|全社共通|全社共有)/i;
 
@@ -108,6 +114,8 @@ export function resolveSalesforceRoute(
   input: SalesforceRoutingInput
 ): SalesforceRoutingResult {
   const intent = classifySalesforceIntent(input.message);
+
+  if(isSelfContainedCanvasRequest(input.message))return {intent:"normal",route:"normal"};
 
   if (intent === "knowledge_search") {
     return { intent, route: "knowledge" };
