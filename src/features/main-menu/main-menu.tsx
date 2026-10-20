@@ -16,11 +16,13 @@ import {
   VenetianMask,
 } from "lucide-react";
 import { getCurrentUser } from "../auth-page/helpers";
+import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
 import { MenuLink } from "./menu-link";
 import { UserProfile } from "./user-profile";
 
 export const MainMenu = async () => {
   const user = await getCurrentUser();
+  const canShowSkills = isSalesforceAllowedEmail(user.email);
 
   return (
     <Menu>
@@ -54,11 +56,13 @@ export const MainMenu = async () => {
               <Book {...menuIconProps} />
             </MenuLink>
           </MenuItem>
-          <MenuItem tooltip="Skills">
-            <MenuLink href="/skills" ariaLabel="Skillsを管理">
-              <FileText {...menuIconProps} />
-            </MenuLink>
-          </MenuItem>
+          {canShowSkills && (
+            <MenuItem tooltip="Skills">
+              <MenuLink href="/skills" ariaLabel="Skillsを管理">
+                <FileText {...menuIconProps} />
+              </MenuLink>
+            </MenuItem>
+          )}
           {user.isAdmin && (
             <>
               <MenuItem tooltip="reporting">
