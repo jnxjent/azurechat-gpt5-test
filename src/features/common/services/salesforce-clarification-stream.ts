@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { ChatCompletionStreamingRunner } from "openai/resources/beta/chat/completions";
 
 /** Display the Gateway's validated question verbatim, without a second model. */
@@ -7,7 +8,8 @@ export function salesforceClarificationStream(question:string,signal:AbortSignal
 }
 
 export function salesforceTextStream(text:string,signal:AbortSignal):ChatCompletionStreamingRunner {
-  const base={id:"gateway-clarification",object:"chat.completion.chunk",created:Math.floor(Date.now()/1000),model:"gateway-clarification"};
+  // The client merges chunks by ID; each reply must have its own stable ID.
+  const base={id:`gateway-${randomUUID()}`,object:"chat.completion.chunk",created:Math.floor(Date.now()/1000),model:"gateway-clarification"};
   const stream=new ReadableStream<Uint8Array>({start(controller){
     const encoder=new TextEncoder();
     controller.enqueue(encoder.encode(JSON.stringify({...base,choices:[{index:0,delta:{role:"assistant",content:text},finish_reason:null}]})+"\n"));

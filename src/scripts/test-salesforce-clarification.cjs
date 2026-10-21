@@ -10,4 +10,5 @@ new Function('require','module','exports',source)(id=>id==='server-only'?{}:requ
  assert.equal(content,'検索条件の確認：\n\n'+question);
  assert.ok(!content.includes('氏名'));assert.ok(!content.includes('チーム名'));assert.ok(!content.includes('svg'));
  console.log('PASS Salesforce clarification: actual stream preserves the exact question without an AI call');
+ await require('./test-salesforce-multiturn-stream.cjs');
 })().catch(error=>{console.error(error);process.exitCode=1;});
