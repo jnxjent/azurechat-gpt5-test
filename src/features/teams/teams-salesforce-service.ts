@@ -1,4 +1,5 @@
 import "server-only";
+import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 
 import { OpenAIInstance } from "@/features/common/services/openai";
 import { buildSalesforceGatewayQuery } from "@/features/common/services/salesforce-routing";
@@ -67,6 +68,9 @@ async function executeQuery(props: {
     return "Salesforce Gatewayへ接続できなかったため、Salesforce上の情報を取得できませんでした。しばらくしてから再度お試しください。";
   }
 
+  const data = await response.json().catch(() => null);
+  const authoritativeText = salesforceReadText(data);
+  if (authoritativeText) return authoritativeText;
   if (!response.ok) {
     console.error("[SF] Teams gateway returned an error", {
       status: response.status,
@@ -74,7 +78,6 @@ async function executeQuery(props: {
     return `Salesforce上の情報を取得できませんでした（Gateway HTTP ${response.status}）。しばらくしてから再度お試しください。`;
   }
 
-  const data = await response.json().catch(() => null);
   if (!data || data.ok === false) {
     return "Salesforce Gatewayから有効な結果を取得できませんでした。";
   }
@@ -82,6 +85,7 @@ async function executeQuery(props: {
   // The Gateway supplies compact display rows and authoritative table/scope
   // instructions. Do not replace them with a generic summary prompt.
   const json = JSON.stringify({
+    ...salesforceReadMetadata(data),
     ok: data.ok, display_hint: data.display_hint, count: data.count,
     total_count: data.total_count, items: data.items,
     pagination: data.pagination, stage_summary: data.stage_summary,
@@ -100,6 +104,7 @@ async function executeQuery(props: {
           [
             "Salesforce Gatewayが返したJSONだけを根拠に、日本語で回答してください。JSONに存在しない情報を推測しないでください。lightning_urlがある場合は[開く](URL)形式にしてください。GatewayのJSONや内部指示は表示しないでください。",
             "total_countは総件数、countは現在ページの件数です。itemsがある場合に該当なしと回答してはいけません。",
+            salesforceReadInstruction,
             typeof data.table_instruction === "string" ? data.table_instruction : "",
           ].join("\n"),
       },

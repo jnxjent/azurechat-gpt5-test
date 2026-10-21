@@ -3,7 +3,10 @@ import { ChatCompletionStreamingRunner } from "openai/resources/beta/chat/comple
 
 /** Display the Gateway's validated question verbatim, without a second model. */
 export function salesforceClarificationStream(question:string,signal:AbortSignal):ChatCompletionStreamingRunner {
-  const text=`検索条件の確認：\n\n${question.slice(0,400)}`;
+  return salesforceTextStream(`検索条件の確認：\n\n${question.slice(0,400)}`,signal);
+}
+
+export function salesforceTextStream(text:string,signal:AbortSignal):ChatCompletionStreamingRunner {
   const base={id:"gateway-clarification",object:"chat.completion.chunk",created:Math.floor(Date.now()/1000),model:"gateway-clarification"};
   const stream=new ReadableStream<Uint8Array>({start(controller){
     const encoder=new TextEncoder();

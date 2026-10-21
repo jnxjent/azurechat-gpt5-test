@@ -205,6 +205,16 @@ async function main(){
  }
  plan=Array.from({length:12},(_,i)=>toolCall('web',i));planning=[];await runSkillSearch({chatThread:{id:'thread-1'},skills:[{title:'上限',content:'検索',version:1}],message:'検索',history:[],email:'user@test',signal:props.signal});assert.equal(planning.length,6);
  const source=fs.readFileSync(path.resolve(__dirname,'../features/chat-page/chat-services/chat-api/chat-api.ts'),'utf8');assert.ok(source.includes('if (shouldRunSkillSearch(selectedSkills.length))'));assert.ok(source.includes('salesforceRouting,'));
- console.log('PASS policy, ACL, gateway failure/empty distinctions, citations, bounds, read-only tools, mixed sources and round cap');
+ fetchQueue=[{ok:true,object:'Account',items:[],count:0,total_count:47846,aggregation_result:{func:'COUNT',value:47846,source:'soql_count',scope:'all'},resolved_fields:[{label:'請求先',api_name:'BillingFlag__c'}],context_applied:{applied:true}}];
+ const exactCount=await createSkillSearchTools({...props,userMessage:'取引先の件数'}).execute('salesforce','取引先の件数');
+ assert.equal(exactCount.status,'ok');assert.ok(exactCount.authoritativeText.includes('47,846'));assert.ok(exactCount.message.includes('resolved_fields'));assert.ok(exactCount.message.includes('context_applied'));
+ fetchQueue=[{ok:true,status:'needs_account_selection',items:[],account_candidates:[{id:'001a',name:'会社A'}],zero_reason:'account_ambiguous'}];
+ const ambiguous=await createSkillSearchTools({...props,userMessage:'取引先の件数'}).execute('salesforce','取引先の件数');
+ assert.equal(ambiguous.status,'needs_confirmation');assert.ok(ambiguous.message.includes('account_ambiguous'));
+ fetchQueue=[{ok:true,object:'Account',items:[],aggregation_result:{func:'COUNT',value:6530,scope:'all',source:'soql_count'}}];
+ plan=[{role:'assistant',content:null,tool_calls:[{id:'count',type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query:'取引先の件数'})}}]}];finals=[];
+ const direct=await runSkillSearch({chatThread:{id:'thread-1'},skills:[{title:'件数確認',content:'Salesforceの件数を確認',version:1}],message:'取引先の件数',history:[],email:'user@test',signal:props.signal});
+ assert.ok(direct.directContent.includes('6,530'));assert.equal(finals.length,0,'authoritative count must bypass final summary LLM');
+ console.log('PASS policy, ACL, gateway failures, candidates, authoritative COUNT without final LLM, metadata, citations and bounds');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

@@ -99,6 +99,11 @@ export async function runSkillSearch(props: { chatThread: ChatThreadModel; skill
         let result: unknown = { status: "error", message: "未対応のツールまたは検索条件です。" };
         try { if (source) { const args = JSON.parse(call.function.arguments); result = await search.execute(source, args.query, args.companyName, args.operation); } } catch { /* Invalid arguments are returned to the model without raw input. */ }
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+        const exactText = (result as {authoritativeText?: string}).authoritativeText;
+        if (source === "salesforce" && exactText) {
+          cleanup();
+          return { runner: undefined, directContent: exactText + "\n\n" + skillReferenceLabel(props.skills), citationResults: [...search.contextResults] };
+        }
         if ((result as {status?: string}).status === "needs_confirmation") {
           needsConfirmation = true;
           if (source === "salesforce") {

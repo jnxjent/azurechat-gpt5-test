@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { updateCanvas } from "./canvas-update";
 import { Undo2, Redo2, MoreHorizontal, Printer, ImageDown, Copy } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/features/ui/dropdown-menu";
-import { CanvasDocument, CanvasTable, canvasNumber, canvasTables, canvasMetadataSuggestions, canvasStep } from "./canvas-rules";
+import { CanvasDocument, CanvasTable, canvasNumber, canvasTables, canvasMetadataSuggestions, canvasImportedMetadata, canvasStep } from "./canvas-rules";
 import { exportCanvasChart, printCanvas } from "./canvas-export";
 
 export function CanvasSuggestionInput({value,suggestion,onChange,className,maxLength,placeholder,id}:{value:string;suggestion:string;onChange:(value:string)=>void;className:string;maxLength:number;placeholder:string;id:string}) {
@@ -13,7 +13,7 @@ export function CanvasSuggestionInput({value,suggestion,onChange,className,maxLe
   return <span className="block">
     <input id={id} className={`${className} placeholder:text-muted-foreground/60`} maxLength={maxLength} value={value} placeholder={available?suggestion:placeholder} aria-describedby={available?`${id}-hint`:undefined}
       onChange={e=>onChange(e.target.value)} onKeyDown={e=>{if(e.key==="Tab"&&!e.shiftKey&&!e.nativeEvent.isComposing&&available)onChange(suggestion);}}/>
-    {available&&<span id={`${id}-hint`} className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">本文の候補 · Tabで確定<button type="button" tabIndex={-1} className="underline underline-offset-2" onClick={()=>onChange(suggestion)}>採用</button></span>}
+    {available&&<span id={`${id}-hint`} className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">チャット・本文の候補 · Tabで確定<button type="button" tabIndex={-1} className="underline underline-offset-2" onClick={()=>onChange(suggestion)}>採用</button></span>}
   </span>;
 }
 
@@ -25,22 +25,30 @@ export function CanvasChart({table,column,columns,type,unit}: {table:CanvasTable
   const low=Math.min(0,...valid),high=Math.max(0,...valid),range=high-low||1;
   const y=(v:number)=>220-(v-low)/range*170;
   const step=640/Math.max(table.rows.length,1),x=(i:number)=>65+step*(i+.5);
+  const seriesName=(c:number)=>{
+    let header=(table.headers[c]??"").trim();
+    let suffix:string|undefined;
+    while((suffix=[`（${unit}）`,`(${unit})`].find(value=>header.endsWith(value))))header=header.slice(0,-suffix.length).trimEnd();
+    return header;
+  };
+  const axisFormat=new Intl.NumberFormat("ja-JP",{notation:"standard",useGrouping:true,maximumFractionDigits:3});
+  const valueFormat=new Intl.NumberFormat("ja-JP",{notation:"standard",useGrouping:true,maximumFractionDigits:20});
   return <svg viewBox="0 0 760 280" role="img" aria-label={`${table.headers[column]}の${type==="bar"?"棒":"折れ線"}グラフ。単位：${unit}`} className="w-full rounded border bg-background">
-    {selected.map((c,s)=><text key={c} x={15+s*125} y="22" fill={colors[s]} fontSize="11">{table.headers[c]?.slice(0,12)}（{unit}）</text>)}
-    {[0,1,2,3,4].map(t=>{const value=low+(high-low)*t/4;return <g key={t}><line x1="65" x2="720" y1={y(value)} y2={y(value)} stroke="currentColor" opacity=".15"/><text x="58" y={y(value)+4} textAnchor="end" fill="currentColor" fontSize="10">{new Intl.NumberFormat("ja",{notation:"compact",maximumFractionDigits:1}).format(value)}</text></g>;})}
+    {selected.map((c,s)=><text key={c} x={15+s*125} y="22" fill={colors[s]} fontSize="11">{seriesName(c).slice(0,12)}（{unit}）</text>)}
+    {[0,1,2,3,4].map(t=>{const value=low+(high-low)*t/4;return <g key={t}><line x1="65" x2="720" y1={y(value)} y2={y(value)} stroke="currentColor" opacity=".15"/><text x="58" y={y(value)+4} textAnchor="end" fill="currentColor" fontSize="10">{axisFormat.format(value)}</text></g>;})}
     <line x1="65" x2="720" y1={y(0)} y2={y(0)} stroke="currentColor" opacity=".5"/>
     {series.map((values,s)=>values.map((value,i)=><g key={`${s}-${i}`}>
-      {value!==null && (type==="bar"?<rect x={x(i)-step*.32+s*step*.64/selected.length} y={Math.min(y(value),y(0))} width={Math.max(1,step*.64/selected.length)} height={Math.max(1,Math.abs(y(value)-y(0)))} fill={colors[s]}><title>{`${table.headers[selected[s]]} ${table.rows[i][0]}: ${value.toLocaleString()} ${unit}`}</title></rect>:<>
+      {value!==null && (type==="bar"?<rect x={x(i)-step*.32+s*step*.64/selected.length} y={Math.min(y(value),y(0))} width={Math.max(1,step*.64/selected.length)} height={Math.max(1,Math.abs(y(value)-y(0)))} fill={colors[s]}><title>{`${seriesName(selected[s])} ${table.rows[i][0]}: ${valueFormat.format(value)} ${unit}`}</title></rect>:<>
         {i>0 && values[i-1]!==null && <line x1={x(i-1)} y1={y(values[i-1]!)} x2={x(i)} y2={y(value)} stroke={colors[s]} strokeDasharray={s?`${s*3} 3`:undefined} strokeWidth="3"/>}
-        <circle cx={x(i)} cy={y(value)} r="4" fill={colors[s]}><title>{`${table.headers[selected[s]]} ${table.rows[i][0]}: ${value.toLocaleString()} ${unit}`}</title></circle>
+        <circle cx={x(i)} cy={y(value)} r="4" fill={colors[s]}><title>{`${seriesName(selected[s])} ${table.rows[i][0]}: ${valueFormat.format(value)} ${unit}`}</title></circle>
       </>)}
       {s===0&&i%Math.max(1,Math.ceil(values.length/10))===0&&<text x={x(i)} y="245" textAnchor="middle" fill="currentColor" fontSize="10">{table.rows[i][0].slice(0,12)}</text>}
     </g>))}
   </svg>;
 }
 
-export function CanvasPanel({threadId,initialContent,onClose}:{threadId:string;initialContent?:string;onClose:()=>void}) {
-  const [doc,setDoc]=useState<CanvasDocument>({threadId,title:"レポート",content:initialContent??"",unit:"",period:"",source:"",chartType:"bar",tableIndex:0,valueColumn:1,version:0});
+export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{threadId:string;initialContent?:string;chatContext?:string;onClose:()=>void}) {
+  const [doc,setDoc]=useState<CanvasDocument>({threadId,title:"レポート",content:initialContent??"",...canvasImportedMetadata(initialContent??""),chartType:"bar",tableIndex:0,valueColumn:1,version:0});
   const [saved,setSaved]=useState("");
   const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[editing,setEditing]=useState(false);
   const [error,setError]=useState(""),[notice,setNotice]=useState("");
@@ -57,7 +65,7 @@ export function CanvasPanel({threadId,initialContent,onClose}:{threadId:string;i
   }
   const dirty=JSON.stringify(doc)!==saved||!!instruction.trim();
   const tables=useMemo(()=>canvasTables(doc.content),[doc.content]);
-  const suggestions=useMemo(()=>canvasMetadataSuggestions(doc.content),[doc.content]);
+  const suggestions=useMemo(()=>canvasMetadataSuggestions(doc.content,chatContext),[doc.content,chatContext]);
   const missing=[!doc.unit.trim()?"単位":"",!doc.period.trim()?"対象期間":"",!doc.source.trim()?"出典":""].filter(Boolean);
   const table=tables[doc.tableIndex];
   const canExportChart=!!table&&!missing.length&&(doc.valueColumns??[doc.valueColumn]).every(c=>c<table.headers.length)&&table.rows.some(row=>(doc.valueColumns??[doc.valueColumn]).some(c=>canvasNumber(row[c]??"")!==null));
@@ -77,7 +85,7 @@ export function CanvasPanel({threadId,initialContent,onClose}:{threadId:string;i
         if(!response.ok)throw Error(data.error||"読み込めませんでした。");
         if(controller.signal.aborted)return;
         setUndo(initialContent===undefined?(data.history??[]):data.item?[data.item,...(data.history??[])]:[]);setRedo([]);
-        if(data.item){setSaved(JSON.stringify(data.item));setDoc(initialContent===undefined?data.item:{...data.item,title:"レポート",content:initialContent,unit:"",period:"",source:"",chartType:"bar",tableIndex:0,valueColumn:1,valueColumns:undefined});}
+        if(data.item){setSaved(JSON.stringify(data.item));setDoc(initialContent===undefined?data.item:{...data.item,title:"レポート",content:initialContent,...canvasImportedMetadata(initialContent),chartType:"bar",tableIndex:0,valueColumn:1,valueColumns:undefined});}
         else setSaved(JSON.stringify({threadId,title:"レポート",content:"",unit:"",period:"",source:"",chartType:"bar",tableIndex:0,valueColumn:1,version:0}));
       }catch(cause){if(!controller.signal.aborted)setError(cause instanceof Error?cause.message:"読み込めませんでした。");}
       finally{if(!controller.signal.aborted)setLoading(false);}
@@ -145,15 +153,15 @@ export function CanvasPanel({threadId,initialContent,onClose}:{threadId:string;i
       <fieldset disabled={loading||busy} aria-label="グラフ" className="space-y-3 rounded-lg border border-slate-400 p-4">
         <h3 className="font-semibold">グラフ</h3>
         <p className="text-xs text-muted-foreground">本文の表を使用します。先頭列を横軸とし、数値列を選択してください。最大100行。未取得・空欄・単位付き文字列は描画せず、折れ線は欠測箇所で途切れます。</p>
-        <p className="text-xs text-muted-foreground">薄文字は本文からの入力候補です。入力欄でTabを押すと確定して次の項目へ移動します。</p>
+        <p className="text-xs text-muted-foreground">薄文字はチャット・本文からの入力候補です。入力欄でTabを押すと確定して次の項目へ移動します。</p>
         <div className="grid grid-cols-2 gap-2">
           <label className="text-sm">対象の表<select className={input} value={doc.tableIndex} onChange={e=>changeDoc({...doc,tableIndex:Number(e.target.value),valueColumn:1,valueColumns:undefined})}>{tables.map((t,i)=><option key={i} value={i}>表{i+1}：{t.headers.join(" / ")}</option>)}</select></label>
           <label className="text-sm">数値列<select className={input} value={doc.valueColumn} onChange={e=>changeDoc({...doc,valueColumn:Number(e.target.value),valueColumns:undefined})}>{table?.headers.slice(1).map((h,i)=><option key={i} value={i+1}>{h}</option>)}</select></label>
-          <label className="text-sm" htmlFor="canvas-unit">単位<CanvasSuggestionInput id="canvas-unit" className={input} maxLength={40} placeholder="例：円、件、%" value={doc.unit} suggestion={suggestions.unit} onChange={value=>changeDoc({...doc,unit:value})}/></label>
-          <label className="text-sm" htmlFor="canvas-period">対象期間<CanvasSuggestionInput id="canvas-period" className={input} maxLength={120} placeholder="例：2026年4月〜9月" value={doc.period} suggestion={suggestions.period} onChange={value=>changeDoc({...doc,period:value})}/></label>
+          <label className="text-sm" htmlFor="canvas-unit">単位<CanvasSuggestionInput id="canvas-unit" className={input} maxLength={40} placeholder="単位を入力" value={doc.unit} suggestion={suggestions.unit} onChange={value=>changeDoc({...doc,unit:value})}/></label>
+          <label className="text-sm" htmlFor="canvas-period">対象期間<CanvasSuggestionInput id="canvas-period" className={input} maxLength={120} placeholder="対象期間を入力" value={doc.period} suggestion={suggestions.period} onChange={value=>changeDoc({...doc,period:value})}/></label>
         </div>
         {table&&<div data-no-export className="flex flex-wrap gap-3 text-sm" role="group" aria-label="比較する系列"><span>比較する系列（同じ単位・最大6列）：</span>{table.headers.slice(1).map((h,i)=>{const columns=doc.valueColumns??[doc.valueColumn],c=i+1;return <label key={c}><input type="checkbox" checked={columns.includes(c)} disabled={!columns.includes(c)&&columns.length>=6} onChange={e=>{const next=e.target.checked?[...columns,c]:columns.filter(v=>v!==c);if(next.length)changeDoc({...doc,valueColumns:next,valueColumn:next[0]});}}/> {h}</label>;})}</div>}
-        <label className="block text-sm" htmlFor="canvas-source">出典<CanvasSuggestionInput id="canvas-source" className={input} maxLength={2000} placeholder="資料名・URL・取得元など" value={doc.source} suggestion={suggestions.source} onChange={value=>changeDoc({...doc,source:value})}/></label>
+        <label className="block text-sm" htmlFor="canvas-source">出典<CanvasSuggestionInput id="canvas-source" className={input} maxLength={2000} placeholder="出典を入力" value={doc.source} suggestion={suggestions.source} onChange={value=>changeDoc({...doc,source:value})}/></label>
         <div className="flex gap-2">{(["bar","line"] as const).map(type=><button type="button" key={type} aria-pressed={doc.chartType===type} className={`rounded border px-3 py-1 text-sm ${doc.chartType===type?"border-primary bg-muted":""}`} onClick={()=>changeDoc({...doc,chartType:type})}>{type==="bar"?"棒グラフ":"折れ線グラフ"}</button>)}</div>
         {!table?<p>本文にMarkdownの表がありません。</p>:missing.length?<p role="status" className="rounded border border-amber-500 p-2 text-sm">グラフ表示には「{missing.join("」「")}」の入力・確定が必要です。薄文字の候補は、Tabまたは「採用」で確定してください。</p>:(doc.valueColumns??[doc.valueColumn]).some(c=>c>=table.headers.length)?<p>数値列を選び直してください。</p>:<>
           <p className="break-words text-sm">単位：{doc.unit} ／ 対象期間：{doc.period}<br/>出典：{doc.source}</p>

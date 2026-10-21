@@ -3,6 +3,11 @@ export interface CanvasDocument {
   chartType: "bar" | "line"; tableIndex: number; valueColumn: number; valueColumns?: number[]; version: number;
 }
 export interface CanvasTable { headers: string[]; rows: string[][] }
+/** The Salesforce report supplies explicit metadata along with its table. */
+export function canvasImportedMetadata(content: string) {
+  return content.startsWith("<!-- salesforce:monthly-report -->")
+    ? canvasMetadataSuggestions(content) : {unit:"",period:"",source:""};
+}
 export function canvasStep(doc:CanvasDocument,past:CanvasDocument[],future:CanvasDocument[],direction:"undo"|"redo") {
   const from=direction==="undo"?past:future;
   if(!from.length)return {doc,past,future};
@@ -14,8 +19,46 @@ export function canvasUpdateDocument(doc:CanvasDocument,proposal:{base:string;co
   if(proposal.base!==JSON.stringify(doc))throw new TypeError("文書が変わりました。修正案を作り直してください。");
   return validateCanvas({...doc,content:proposal.content});
 }
-/** Suggest only explicitly labelled, unambiguous metadata in the document. No model call. */
-export function canvasMetadataSuggestions(content: string): {unit:string;period:string;source:string} {
+/** Context is restricted to the user turns preceding the selected answer. */
+export function canvasChatContext(messages:ReadonlyArray<{role:string;content:string}>,content?:string):string {
+  let end=messages.length;
+  if(content!==undefined){for(let i=messages.length-1;i>=0;i--){if(messages[i].role==="assistant"&&messages[i].content===content){end=i;break;}}}
+  return messages.slice(0,end).filter(message=>message.role==="user").slice(-4).reverse().map(message=>message.content).join("\n");
+}
+
+function canvasPeriodFromText(text:string):string {
+  text=text.normalize("NFKC");
+  const iso=text.match(/(\d{4}-\d{2}-\d{2})\s*[〜~～]\s*(\d{4}-\d{2}-\d{2})/);
+  if(iso){const start=new Date(iso[1]),end=new Date(iso[2]);if(Number.isFinite(+start)&&Number.isFinite(+end)&&start<=end&&start.toISOString().slice(0,10)===iso[1]&&end.toISOString().slice(0,10)===iso[2])return `${iso[1]}〜${iso[2]}`;}
+  const full=text.match(/(\d{4})年\s*(\d{1,2})月\s*(?:(\d{1,2})日)?\s*(?:[〜~～-]|から)\s*(?:(\d{4})年)?\s*(\d{1,2})月\s*(?:(\d{1,2})日)?/);
+  const months=text.match(/(\d{4})年\s*(\d{1,2})\s*[〜~～-]\s*(\d{1,2})月/);
+  if(!full&&!months){
+    const single=text.match(/(\d{4})年\s*(\d{1,2})月(?!\s*\d|\s*[〜~～-]|\s*から)/);
+    if(single&&!/[〜~～]|から/.test(text))return canvasPeriodFromText(`${single[1]}年${single[2]}〜${single[2]}月`);
+    return "";
+  }
+  const year=Number((full??months)![1]),month=Number((full??months)![2]);
+  const endYear=full?Number(full[4]||year):year,endMonth=Number(full?full[5]:months![3]);
+  if(month<1||month>12||endMonth<1||endMonth>12)return "";
+  const startDay=Number(full?.[3]||1),endDay=Number(full?.[6]||new Date(Date.UTC(endYear,endMonth,0)).getUTCDate());
+  const date=(y:number,m:number,d:number)=>`${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  const start=date(year,month,startDay),end=date(endYear,endMonth,endDay);
+  const startDate=new Date(start),endDate=new Date(end);
+  if(!Number.isFinite(+startDate)||!Number.isFinite(+endDate)||startDate.toISOString().slice(0,10)!==start||endDate.toISOString().slice(0,10)!==end||start>end)return "";
+  return `${start}〜${end}`;
+}
+
+function hasCanvasPeriodIntent(text:string):boolean {
+  // Grouping/presentation changes retain the preceding period. A real new
+  // period still blocks fallback even if it cannot yet be parsed (e.g. 来月).
+  const periodText=text.normalize("NFKC")
+    .replace(/(?:四半期|年度|年|月|週|日)(?:別|ごと)|毎(?:年|月|週|日)/g,"")
+    .replace(/(?:同じ|同一)(?:の)?期間|(?:対象期間|期間)(?:は|を)?(?:そのまま|同じ|変えず|変更せず)/g,"");
+  return /\d{4}|\d+\s*(?:年|月|週|日)|(?:今|来|先|昨|翌|前|再来)(?:年|月|週|日|期)|期間|年度|対象月|対象年|四半期|直近|過去/.test(periodText);
+}
+
+/** Prefer explicit report metadata, then offer candidates from the relevant chat. */
+export function canvasMetadataSuggestions(content: string,context=""): {unit:string;period:string;source:string} {
   const values={unit:new Set<string>(),period:new Set<string>(),source:new Set<string>()};
   let fenced=false;
   for(const line of content.split(/\r?\n/)) {
@@ -29,7 +72,18 @@ export function canvasMetadataSuggestions(content: string): {unit:string;period:
     const limit=key==="unit"?40:key==="period"?120:2000;
     if(value.length<=limit&&!/^(不明|未取得|未記載|なし|N\/?A|[-—]+)$/i.test(value))values[key].add(value);
   }
-  return {unit:values.unit.size===1?Array.from(values.unit)[0]:"",period:values.period.size===1?Array.from(values.period)[0]:"",source:values.source.size===1?Array.from(values.source)[0]:""};
+  const visible=content.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g,"");
+  const headers=canvasTables(visible).map(table=>table.headers.join(" ")).join(" ");
+  const units=Array.from(new Set(headers.match(/億円|万円|千円|円|USD|EUR|件|%/g)??[]));
+  const monetary=units.filter(unit=>unit!=="件"&&unit!=="%");
+  const inferredUnit=monetary.length===1?monetary[0]:units.length===1?units[0]:/商談金額/.test(visible+context)&&!monetary.length?"円":"";
+  const periodContext=context.split("\n").find(hasCanvasPeriodIntent)??"";
+  const period=canvasPeriodFromText(visible)||canvasPeriodFromText(periodContext);
+  const inferSource=(text:string)=>/Salesforce|salesforce\.com|lightning\.force\.com/i.test(text)?"Salesforce":/SharePoint|sharepoint\.com/i.test(text)?"SharePoint":"";
+  const source=inferSource(visible)||context.split("\n").map(inferSource).find(Boolean)||"";
+  return {unit:values.unit.size===1?Array.from(values.unit)[0]:values.unit.size?"":inferredUnit,
+    period:values.period.size===1?Array.from(values.period)[0]:values.period.size?"":period,
+    source:values.source.size===1?Array.from(values.source)[0]:values.source.size?"":source};
 }
 export function canvasTables(content: string): CanvasTable[] {
   const result: CanvasTable[] = [];

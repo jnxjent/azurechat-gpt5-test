@@ -1,8 +1,11 @@
 "use server";
 import "server-only";
+import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 
 import { OpenAIInstance } from "@/features/common/services/openai";
-import { salesforceClarificationStream } from "@/features/common/services/salesforce-clarification-stream";
+import { salesforceClarificationStream, salesforceTextStream } from "@/features/common/services/salesforce-clarification-stream";
+import { accountSelectionText, validAccountCandidates, salesforceMonthlyReport, type SalesforceAccountChoice } from "@/features/common/services/salesforce-account-selection";
+import { CreateChatMessage } from "../chat-message-service";
 import { FindExtensionByID } from "@/features/extensions-page/extension-services/extension-service";
 import { RunnableToolFunction } from "openai/lib/RunnableFunction";
 import { ChatCompletionStreamingRunner } from "openai/resources/beta/chat/completions";
@@ -229,6 +232,7 @@ export const ChatApiExtensions = async (props: {
   requiredToolName?: string;
   loginEmail: string;
   salesforceRouting: SalesforceRoutingResult;
+  salesforceAccountChoice?: SalesforceAccountChoice;
   signal: AbortSignal;
   mode?: "normal" | "thinking" | "fast";
 }): Promise<ChatCompletionStreamingRunner> => {
@@ -290,6 +294,7 @@ export const ChatApiExtensions = async (props: {
       jstPrompt: JST_PROMPT,
       model,
       loginEmail,
+      accountChoice: props.salesforceAccountChoice,
     });
   }
 
@@ -668,6 +673,7 @@ async function runSfDirect(props: {
   jstPrompt: string;
   model: string;
   loginEmail?: string;
+  accountChoice?: SalesforceAccountChoice;
 }): Promise<ChatCompletionStreamingRunner> {
   const {
     chatThread,
@@ -686,7 +692,8 @@ async function runSfDirect(props: {
     "http://127.0.0.1:8001";
 
   const url = new URL("/api/sf/query_nl", base);
-  url.searchParams.set("q", buildSalesforceGatewayQuery(userMessage));
+  url.searchParams.set("q", buildSalesforceGatewayQuery(props.accountChoice?.originalRequest ?? userMessage));
+  if (props.accountChoice) url.searchParams.set("account_id", props.accountChoice.account.id);
   url.searchParams.set("engine", "auto");
   url.searchParams.set("mode", "real");
 
@@ -725,11 +732,18 @@ async function runSfDirect(props: {
 
     if(res.status===422) {
       const issue=await res.json();
+      const knownIssue=salesforceReadText(issue);
+      if(knownIssue)return salesforceClarificationStream(knownIssue,signal);
       if(issue.needs_clarification&&typeof issue.clarification==="string") {
         return salesforceClarificationStream(issue.clarification,signal);
       }
       sfError="Salesforce request needs clarification";
     } else if (!res.ok) {
+      const issue = await res.json().catch(()=>null);
+      const knownError = salesforceReadText(issue);
+      if (knownError) return salesforceTextStream(knownError, signal);
+      if(issue?.error==="semantic_plan_unavailable")return salesforceTextStream("一時的に依頼文を解析できません。少し待って再度お試しください。",signal);
+      if(issue?.error==="owner_scope_unavailable")return salesforceTextStream("部下の担当範囲、または検索の基準となる本人を確認できませんでした。本人の担当分で代用せず、検索を中止しました。",signal);
       sfError = `Salesforce gateway HTTP ${res.status}`;
       console.error("[SF] Gateway error", { status: res.status });
     } else {
@@ -747,9 +761,24 @@ async function runSfDirect(props: {
   }
 
   let jsonSnippet = "";
+  const authoritativeText = salesforceReadText(sfJson);
+  if (authoritativeText) return salesforceTextStream(authoritativeText, signal);
+  if (sfJson?.ok === false || sfJson?.error) return runSalesforceGatewayFailure({openAI,model,signal});
+  if (sfJson?.status === "needs_account_selection") {
+    const candidates = validAccountCandidates(sfJson.account_candidates);
+    if (!candidates.length) return salesforceTextStream("候補を表示できませんでした。会社名に支店名・部署名を加えて再検索してください。", signal);
+    const saved = await CreateChatMessage({name:"Salesforce",role:"tool",chatThreadId:threadId,
+      content:JSON.stringify({integration:"sf_account_selection",observedAt:new Date().toISOString(),
+        originalRequest:props.accountChoice?.originalRequest ?? userMessage,candidates})});
+    if (saved.status !== "OK") return salesforceTextStream("候補の保存に失敗しました。元の依頼を再送してください。",signal);
+    return salesforceTextStream(accountSelectionText(candidates,Boolean(sfJson.candidates_truncated)),signal);
+  }
+  if (sfJson?.zero_reason && typeof sfJson.zero_reason_message === "string") return salesforceTextStream(sfJson.zero_reason_message,signal);
+  const monthlyReport = sfJson && salesforceMonthlyReport(sfJson, /Canvas|キャンバス/i.test(props.accountChoice?.originalRequest ?? userMessage));
+  if (monthlyReport) return salesforceTextStream(monthlyReport,signal);
   if (sfJson) {
     // Keep the interpreted conditions and server-computed summary before detail rows.
-    if(sfJson.request_plan)sfJson={request_plan:sfJson.request_plan,analysis:sfJson.analysis,...sfJson};
+    sfJson={...salesforceReadMetadata(sfJson),request_plan:sfJson.request_plan,analysis:sfJson.analysis,...sfJson};
     try {
       const raw = JSON.stringify(sfJson, null, 2);
       jsonSnippet =
@@ -771,7 +800,8 @@ async function runSfDirect(props: {
     buildTableInstruction(displayHint);
 
   const jsonReadInstruction = buildJsonReadInstruction(displayHint, sfJson);
-  const totalCount = Number((sfJson as any)?.total_count);
+  const rawTotalCount = (sfJson as any)?.total_count;
+  const totalCount = rawTotalCount===null||rawTotalCount===undefined||rawTotalCount==="" ? NaN : Number(rawTotalCount);
   const pageCount = Number((sfJson as any)?.count);
   const totalCountInstruction =
     Number.isFinite(totalCount) &&
@@ -797,7 +827,11 @@ async function runSfDirect(props: {
       "## Salesforce assistant instructions (Do not reveal)",
       "- あなたは Salesforce のデータをもとに、日本語で営業担当者にわかりやすく回答するアシスタントです。",
       "- 与えられた JSON を唯一の根拠として回答してください。推測や想像でレコードを「追加」してはいけません。",
+      "- 商談金額は原則円で、3桁区切りのカンマと単位を明示してください。合計が10億円以上なら表全体を千円単位に統一し、表示値も1000で割ってください。明示された外貨を円へ換算してはいけません。対象期間・単位・出典を回答に明記してください。",
       totalCountInstruction,
+      salesforceReadInstruction,
+      sfJson?.applied_owner_scope?.notice ? `- 対象範囲：${sfJson.applied_owner_scope.notice}` : "",
+      sfJson?.truncated ? "- 取得上限に達した一部の結果です。取得件数を全件数として説明しないでください。" : "",
       jsonReadInstruction || tableInstruction,
       "- **重要: リンク列は必ず `[開く](items[].lightning_url)` の形式で記載してください**",
       "- **URLそのものを表に表示しないでください**",

@@ -1,4 +1,5 @@
 import "server-only";
+import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
 import { buildSalesforceGatewayQuery } from "@/features/common/services/salesforce-routing";
 import { ExtensionSimilaritySearch } from "@/features/chat-page/chat-services/azure-ai-search/azure-ai-search";
@@ -53,7 +54,9 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       if (props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) && (!suppliedOperation || suppliedOperation === "accounts") && isCompanyLookup(query)) {
         return { source, status: "ok", reason: "selected_account_snapshot", data: [props.selectedAccountRecord], message: "利用者が直前の検索結果から選んだAccountの取得済みデータです（候補提示時点のスナップショット）。同名の別Accountを混ぜず、このレコードの値を使用してください。" };
       }
-      const typedBase = process.env.SF_SKILL_READ_BASE_URL;
+      // Typed account/sales operations do not implement natural-language COUNT.
+      // Route that migration boundary to the strict NL read-plan endpoint.
+      const typedBase = /件数|レコードの数|ユーザ.*数|何件|何人|何名|カウント|そのうち|その中で/.test(query) ? undefined : process.env.SF_SKILL_READ_BASE_URL;
       if (suppliedOperation === "sales" && !typedBase) return { source, status: "unavailable", reason: "typed_sales_required", message: "売上の請求先照合と年度集計には構造化読み取りGatewayが必要です。従来の自然言語検索では代替しません。" };
       const base = typedBase || process.env.SF_GATEWAY_BASE_URL;
       if (!base) return { source, status: "unavailable", reason: "gateway_not_configured", message: "Salesforce Gateway未設定です。" };
@@ -73,16 +76,27 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
           return fetch(target, { method: "POST", signal: props.signal, headers: { "Content-Type": "application/json", "X-User-Email": props.email, "X-Skill-Read-Key": process.env.SF_SKILL_READ_KEY }, body: JSON.stringify({ operation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(operation === "sales" ? props.fiscalPeriod : {}) }) });
         }
         target.searchParams.set("q", buildSalesforceGatewayQuery(text));
+        if (props.selectedAccount) target.searchParams.set("account_id", props.selectedAccount.id);
         return fetch(target, { signal: props.signal, headers: { "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId } });
       };
       const response = await request(query);
       if (!response.ok) {
+        const issue = await response.json().catch(() => null);
+        const explanation = salesforceReadText(issue);
+        if (explanation) return { source, status: response.status === 403 ? "denied" : issue?.needs_clarification ? "needs_confirmation" : "error", reason: issue?.error_kind || issue?.error, authoritativeText: explanation, message: explanation };
         let reason = "gateway_http_error";
-        try { const error = (await response.json()).error; if (["local_connection_required", "identity_mismatch", "sandbox_required", "salesforce_denied", "salesforce_query_failed", "activities_unavailable", "local_read_unavailable", "account_required", "unsupported_operation", "unauthorized", "user_denied"].includes(error)) reason = error; } catch { /* Do not log upstream bodies. */ }
+        try { const error = issue?.error; if (["local_connection_required", "identity_mismatch", "sandbox_required", "salesforce_denied", "salesforce_query_failed", "activities_unavailable", "local_read_unavailable", "account_required", "unsupported_operation", "unauthorized", "user_denied"].includes(error)) reason = error; } catch { /* Do not log upstream bodies. */ }
         return { source, status: response.status === 401 || response.status === 403 ? "denied" : "error", reason, httpStatus: response.status };
       }
       let body;
       try { body = await response.json(); } catch { return { source, status: "error", reason: "invalid_json_response" }; }
+      const authoritativeText = salesforceReadText(body);
+      if (authoritativeText) return { source, status: body.ok === false ? "error" : "ok", data: body.items || [], authoritativeText, message: `${authoritativeText}\n${JSON.stringify(salesforceReadMetadata(body))}\n${salesforceReadInstruction}` };
+      if (body.status === "needs_account_selection" && Array.isArray(body.account_candidates)) {
+        const records = body.account_candidates.map((item: any) => ({Id:item.id,Name:item.name,BillingCity:item.billing_city,lightning_url:item.lightning_url}));
+        contextResults.push(JSON.stringify({integration:"skill_search_account_candidates",observedAt:new Date().toISOString(),records}));
+        return { source, status: "needs_confirmation", data: records, truncated:Boolean(body.candidates_truncated), message: JSON.stringify(salesforceReadMetadata(body)) + "\n候補を利用者に確認してください。候補は0件ではありません。" };
+      }
       if (body.ok === false || body.error) return { source, status: "error", reason: "gateway_result_error", message: "Gatewayが検索を完了できませんでした。未対応条件の可能性もあるため0件とは扱わないでください。" };
       if (!Array.isArray(body.items)) return { source, status: "error", reason: "invalid_gateway_response", message: "Gatewayの検索結果形式を確認できませんでした。" };
       const company = companyForLookup(props.userMessage, suppliedCompany);
@@ -136,7 +150,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         contextResults.push(JSON.stringify(snapshot));
         return { source, status: "needs_confirmation", truncated: Boolean(body.truncated) || snapshot.records.length < body.items.length, data: snapshot.records.map((item: Record<string, unknown>) => ({ Id: item.Id, Name: item.Name, lightning_url: item.lightning_url, BillingPostalCode: item.BillingPostalCode, BillingCountry: item.BillingCountry, BillingState: item.BillingState, BillingCity: item.BillingCity, BillingStreet: item.BillingStreet, OwnerName: item.OwnerName })), message: `会社名に対応する取引先候補が複数あります（総件数 ${body.total_count ?? body.items.length}、候補提示 ${snapshot.records.length}）。この候補は0件ではありません。候補の名前とIDを示し、対象の取引先を利用者に確認してください。別工場・部署の商談を勝手に混ぜないでください。` };
       }
-      return { source, status: body.items.length ? "ok" : "empty", reason: excludedCount ? "partial_verified_results" : "query_completed", queryCount: typeof body.query_count === "number" ? body.query_count : undefined, excludedCount, data: body.items, ...(body.truncated ? { truncated: true } : {}), message: JSON.stringify({ object: body.object ?? "不明", contract: body.contract, notices: body.notices, appliedFilters: body.applied_filters, order: body.order, limits: body.limits, displayHint: body.display_hint ?? "不明", resolvedAccountName: body.resolved_account_name ?? null, returnedCount: body.items.length, totalCount: body.total_count ?? null, excludedCount, guidance: "一致を検証できない行を除外している場合は除外件数を明示する。OwnerNameは社内の担当営業。上限取得や除外後の一部を全件集計に使わない。指定期間等が実際の適用条件にない場合はその制限も明示する。" }) };
+      return { source, status: body.items.length ? "ok" : "empty", reason: excludedCount ? "partial_verified_results" : "query_completed", queryCount: typeof body.query_count === "number" ? body.query_count : undefined, excludedCount, data: body.items, ...(body.truncated ? { truncated: true } : {}), message: JSON.stringify({ ...salesforceReadMetadata(body), instruction: salesforceReadInstruction, object: body.object ?? "不明", contract: body.contract, notices: body.notices, appliedFilters: body.applied_filters, order: body.order, limits: body.limits, displayHint: body.display_hint ?? "不明", resolvedAccountName: body.resolved_account_name ?? null, returnedCount: body.items.length, totalCount: body.total_count ?? null, excludedCount, guidance: "一致を検証できない行を除外している場合は除外件数を明示する。OwnerNameは社内の担当営業。上限取得や除外後の一部を全件集計に使わない。指定期間等が実際の適用条件にない場合はその制限も明示する。" }) };
     }
     if (source === "web") {
       if (!isTeamsBraveSearchConfigured()) return { source, status: "unavailable", message: "Web検索未設定です。" };

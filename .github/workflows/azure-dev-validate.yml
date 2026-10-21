@@ -35,6 +35,10 @@ jobs:
           node scripts/test-salesforce-routing.cjs
           node scripts/test-canvas.cjs
           node scripts/test-salesforce-clarification.cjs
+          node scripts/test-salesforce-read-result.cjs
+          node scripts/test-salesforce-account-selection.cjs
+          node scripts/test-salesforce-account-web-entry.cjs
+          node scripts/test-canvas-report-format.cjs
           node scripts/test-teams-sf-image-fixes.cjs
           node scripts/test-image-upload-routing.cjs
           node scripts/test-teams-desknets.cjs

@@ -1,0 +1,26 @@
+const fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),assert=require('node:assert/strict');
+function load(relative){const source=ts.transpileModule(fs.readFileSync(path.resolve(__dirname,relative),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;const mod={exports:{}};new Function('require','module','exports',source)(require,mod,mod.exports);return mod.exports;}
+const {accountSelectionText,resolveSalesforceAccountChoice,isSalesforceAccountChoiceReply,salesforceMonthlyReport}=load('../features/common/services/salesforce-account-selection.ts');
+const {canvasTables,canvasNumber,canvasImportedMetadata}=load('../features/canvas/canvas-rules.ts');
+const candidates=[{id:'001A70000058uKbIAI',name:'J&T環境株式会社',billing_city:'東京'},{id:'001RA00001cNvJ7YAK',name:'J&T環境 営業室'}];
+const now=Date.now(),originalRequest='SalesforceからJ&T環境の商談を2026年1〜3月で月別集計しCanvasで棒グラフにしてください。';
+const state={integration:'sf_account_selection',observedAt:new Date(now).toISOString(),originalRequest,candidates};
+const history=[{role:'assistant',content:accountSelectionText(candidates,false)},{role:'tool',content:JSON.stringify(state)},{role:'user',content:originalRequest}];
+assert.equal(canvasTables(history[0].content)[0].rows.length,2);
+assert.equal(resolveSalesforceAccountChoice('では、２番で',history,now).account.id,candidates[1].id);
+assert.equal(resolveSalesforceAccountChoice(candidates[0].id,history,now).originalRequest,originalRequest);
+for(const text of ['3番で','001A70000000000IAA','ありがとう','1番で、期間は先月'])assert.equal(resolveSalesforceAccountChoice(text,history,now),undefined);
+assert.equal(resolveSalesforceAccountChoice('1',history,now+600001),undefined);
+assert.ok(isSalesforceAccountChoiceReply('99番で',history));
+assert.ok(!isSalesforceAccountChoiceReply('来月に変更してください',history));
+assert.equal(resolveSalesforceAccountChoice('1',[{role:'assistant',content:'別の会話'},...history],now),undefined);
+assert.equal(resolveSalesforceAccountChoice('1',[{role:'user',content:'別の依頼'},...history],now),undefined);
+assert.equal(resolveSalesforceAccountChoice('1',[history[0],{role:'tool',content:'{}'},...history.slice(1)],now),undefined);
+const body={request_plan:{account_name:'J&T環境',account_id:candidates[0].id,dateRange:{start:'2026-01-01',end:'2026-03-31'},aggregation:{interval:'month',func:'SUM'}},analysis:{complete:true,items:[{period:'2026-01',value:'0',record_count:1},{period:'2026-02',value:'123456.78',record_count:2},{period:'2026-03',value:null,record_count:1}]},items:[]};
+const report=salesforceMonthlyReport(body),table=canvasTables(report)[0];
+assert.equal(canvasImportedMetadata(salesforceMonthlyReport(body,true)).period,'2026-01-01〜2026-03-31');
+assert.equal(canvasImportedMetadata(report).period,'');
+assert.equal(table.rows.length,3);assert.equal(canvasNumber(table.rows[0][1]),0);assert.equal(canvasNumber(table.rows[1][1]),123456.78);assert.equal(canvasNumber(table.rows[2][1]),null);assert.ok(!report.includes('svg'));
+body.analysis.complete=false;assert.equal(canvasNumber(canvasTables(salesforceMonthlyReport(body))[0].rows[1][1]),null);
+body.analysis.items=[];body.zero_reason_message='期間外には商談があります。';assert.equal(salesforceMonthlyReport(body),body.zero_reason_message);
+console.log('PASS Salesforce account choices: persisted state, expiration, invalid selections, unchanged request; monthly report feeds Canvas with zero/missing distinction');

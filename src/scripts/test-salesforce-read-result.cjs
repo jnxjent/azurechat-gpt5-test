@@ -1,0 +1,18 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript');
+const filename=path.resolve(__dirname,'../features/common/services/salesforce-read-result.ts');
+const moduleResult={exports:{}};
+new Function('module','exports',ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText)(moduleResult,moduleResult.exports);
+const {salesforceReadText,salesforceReadMetadata,salesforceReadInstruction}=moduleResult.exports;
+const body={ok:true,object:'Account',total_count:47846,aggregation_result:{func:'COUNT',value:47846,source:'soql_count',scope:'all'},execution_summary:{object:'Account',scope:'all',method:'Salesforce COUNT()',filters:[]}};
+assert.match(salesforceReadText(body),/47,846/);
+assert.match(salesforceReadText({...body,aggregation_result:{...body.aggregation_result,value:0}}),/0 件/);
+assert.equal(salesforceReadText({...body,aggregation_result:{...body.aggregation_result,value:'47846'}}),undefined);
+assert.equal(salesforceReadText({...body,aggregation_result:{...body.aggregation_result,source:'llm'}}),undefined);
+assert.match(salesforceReadText({ok:true,status:'query_explanation',query_explanation:{object:'Account',scope:'self',scope_notice:'ログイン本人のみ',filters:[{label:'請求先',op:'=',value:true}],method:'Salesforce COUNT()'}}),/ログイン本人のみ/);
+assert.equal(salesforceReadText({status:'conversation'}),'どうぞ、ご質問ください。');
+assert.match(salesforceReadText({error_kind:'field_unresolved',field_candidates:[{label:'請求先',api_name:'Billing__c'}]}),/Billing__c/);
+assert.equal(salesforceReadText({error:'private_server_error'}),undefined);
+assert.match(salesforceReadInstruction,/ページの行数から件数や合計を計算してはいけません/);
+const metadata={zero_reason:'no_rows',account_candidates:[{id:'001'}],truncated:true,total_count:null,aggregation_result:body.aggregation_result,resolved_fields:[],context_applied:{applied:true}};
+for(const [key,value] of Object.entries(metadata))assert.deepEqual(salesforceReadMetadata(metadata)[key],value);
+console.log('PASS read result: authoritative counts including zero, invalid aggregates rejected, exact query explanations, field candidates, metadata preservation');

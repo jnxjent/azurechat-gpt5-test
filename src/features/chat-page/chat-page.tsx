@@ -11,6 +11,7 @@ import { Download } from "lucide-react";
 import { useSession } from "next-auth/react";
 import { FC, useEffect, useRef, useState } from "react";
 import { CanvasPanel } from "@/features/canvas/canvas-panel";
+import { canvasChatContext } from "@/features/canvas/canvas-rules";
 import { ExtensionModel } from "../extensions-page/extension-services/models";
 import { ChatHeader } from "./chat-header/chat-header";
 import {
@@ -40,10 +41,10 @@ const BLOB_URL_RE = /^https?:\/\/[^/]+\.blob\.core\.windows\.net\//i;
 export const ChatPage: FC<ChatPageProps> = (props) => {
   const { data: session } = useSession();
   const isAdmin = props.isAdmin;
-  const [canvas,setCanvas]=useState<{content?:string;key:number}|null>(null);
+  const [canvas,setCanvas]=useState<{content?:string;context:string;key:number}|null>(null);
   function openCanvas(content?:string) {
     if(canvas && !window.confirm("Canvasを開き直します。未保存の変更がある場合は破棄されます。続けますか？"))return;
-    setCanvas({content,key:Date.now()});
+    setCanvas({content,context:canvasChatContext(messages,content),key:Date.now()});
   }
   useEffect(()=>setCanvas(null),[props.chatThread.id]);
 
@@ -64,7 +65,9 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
     const lastUserIndex=messages.map(message=>message.role).lastIndexOf("user");
     const lastUser=messages[lastUserIndex];
     const answer=messages.slice(lastUserIndex+1).reverse().find(message=>message.role==="assistant"&&message.content.trim());
-    if(lastUser&&answer&&/(?:Canvas|キャンバス)\s*(?:に|で|へ).*(?:まとめ|作成|表示|整理)/i.test(lastUser.content))setCanvas({content:answer.content,key:Date.now()});
+    const requested=lastUser&&/(?:Canvas|キャンバス)\s*(?:に|で|へ).*(?:まとめ|作成|表示|整理|グラフ)/i.test(lastUser.content);
+    const monthlyReport=answer?.content.startsWith("<!-- salesforce:monthly-report -->");
+    if(answer&&!answer.content.startsWith("Salesforceの取引先を選択してください。")&&(requested||monthlyReport))setCanvas({content:answer.content,context:canvasChatContext(messages,answer.content),key:Date.now()});
   },[loading,messages,canvas]);
   const current = useRef<HTMLDivElement>(null);
   useChatScrollAnchor({ ref: current });
@@ -140,7 +143,7 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
       <DeskNetsCredentialRegistration />
       <ChatInput isAdmin={isAdmin} />
       </div>
-      {canvas&&<CanvasPanel key={`${props.chatThread.id}:${canvas.key}`} threadId={props.chatThread.id} initialContent={canvas.content} onClose={()=>setCanvas(null)}/>}
+      {canvas&&<CanvasPanel key={`${props.chatThread.id}:${canvas.key}`} threadId={props.chatThread.id} initialContent={canvas.content} chatContext={canvas.context} onClose={()=>setCanvas(null)}/>}
     </main>
   );
 };

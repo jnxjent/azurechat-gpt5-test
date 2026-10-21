@@ -8,6 +8,7 @@ const SF_EXTENSION_ID = process.env.SF_EXTENSION_ID || "";
 import { getCurrentUser } from "@/features/auth-page/helpers";
 import { GenerateSasUrl } from "@/features/common/services/azure-storage";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
+import { resolveSalesforceAccountChoice, isSalesforceAccountChoiceReply } from "@/features/common/services/salesforce-account-selection";
 import {
   resolveSalesforceRoute,
 } from "@/features/common/services/salesforce-routing";
@@ -164,8 +165,18 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
     Boolean(SF_EXTENSION_ID) &&
     currentChatThread.extension.includes(SF_EXTENSION_ID);
   const salesforceAllowed = isSalesforceAllowedEmail(user.email);
+  const accountChoiceHistory = salesforceAllowed && hasSalesforceExtension && props.message.length < 100
+    ? await FindTopChatMessagesForCurrentUser(currentChatThread.id, 20) : undefined;
+  const salesforceAccountChoice = accountChoiceHistory?.status === "OK"
+    ? resolveSalesforceAccountChoice(props.message, accountChoiceHistory.response) : undefined;
+  if (!salesforceAccountChoice && accountChoiceHistory?.status === "OK" && isSalesforceAccountChoiceReply(props.message, accountChoiceHistory.response)) {
+    const content="指定した候補番号・IDを確認できないか、候補の有効期限（10分）が切れています。元の商談検索の依頼を再送して、候補を選び直してください。";
+    await CreateChatMessage({name:user.name,role:"user",content:props.message,chatThreadId:currentChatThread.id});
+    await CreateChatMessage({name:AI_NAME,role:"assistant",content,chatThreadId:currentChatThread.id});
+    return new Response(`event: finalContent\ndata: ${JSON.stringify({type:"finalContent",response:content})}\n\n`,{headers:{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache"}});
+  }
   const salesforceRouting = resolveSalesforceRoute({
-    message: props.message,
+    message: salesforceAccountChoice?.originalRequest ?? props.message,
     isSalesforceAllowed: salesforceAllowed,
     hasSalesforceExtension,
     defaultToSalesforce: hasSalesforceExtension,
@@ -371,6 +382,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
           (roomAvailabilityRequest ? "desknets_schedule_agent" : undefined),
         loginEmail: user.email,
         salesforceRouting,
+        salesforceAccountChoice,
         signal,
         mode: resolvedMode,
       });

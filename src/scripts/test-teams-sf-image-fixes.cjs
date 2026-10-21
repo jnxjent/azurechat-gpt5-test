@@ -12,6 +12,7 @@ function load(file, mocks = {}, globals = {}) {
   vm.runInNewContext(code, { exports, require(name) {
     if (name === 'server-only') return {};
     if (name in mocks) return mocks[name];
+    if (name === '@/features/common/services/salesforce-read-result') return load('features/common/services/salesforce-read-result.ts');
     return require(name);
   }, process, console, Buffer, AbortSignal, URL, URLSearchParams, ...globals });
   return exports;
@@ -140,7 +141,7 @@ async function main() {
   assert.match(await service.createTeamsImageReply({ ...props, activityId: 'edit3', message: logoRequest, uploadedFiles }), /編集対象/);
   assert.equal(editCalls, 1);
 
-  let receivedUrl, receivedHeaders, summary;
+  let receivedUrl, receivedHeaders, summary, sfBody;
   const sf = load('features/teams/teams-salesforce-service.ts', {
     '@/features/common/services/salesforce-routing': routing,
     '@/features/common/services/openai': { OpenAIInstance: () => ({ chat: { completions: {
@@ -148,7 +149,7 @@ async function main() {
     } } }) },
   }, { fetch: async (url, options) => {
     receivedUrl = new URL(url); receivedHeaders = options.headers;
-    return { ok: true, json: async () => ({ ok: true, count: 1, total_count: 2000,
+    return { ok: true, json: async () => sfBody || ({ ok: true, count: 1, total_count: 2000,
       items: [{ ReportContent: 'x'.repeat(9000) }], table_instruction: '対象はGatewayで絞り込み済みです' }) };
   } });
   await sf.queryTeamsSalesforce({ message: 'SFで私の部下の日報を一覧表示して', userEmail: 'user@example.com', conversationId: 'A', activityId: 'sf1' });
@@ -158,6 +159,10 @@ async function main() {
   const json = summary.messages[1].content.split('Gateway JSON:\n')[1];
   assert.equal(JSON.parse(json).items[0].ReportContent.length, 9000);
   assert.equal(JSON.parse(json).total_count, 2000);
+  sfBody={ok:true,object:'Account',items:[],aggregation_result:{func:'COUNT',source:'soql_count',value:47846,scope:'all'}};
+  summary=null;
+  const counted=await sf.queryTeamsSalesforce({message:'取引先の件数',userEmail:'user@example.com',conversationId:'A',activityId:'count1'});
+  assert.match(counted,/47,846/);assert.equal(summary,null,'Teams COUNT must bypass summary LLM');
 
   let generationInput, failStorage = false;
   const writes = [];
