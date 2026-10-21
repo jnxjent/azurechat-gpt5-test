@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTheme } from "next-themes";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { updateCanvas } from "./canvas-update";
@@ -17,8 +18,11 @@ export function CanvasSuggestionInput({value,suggestion,onChange,className,maxLe
   </span>;
 }
 
-export function CanvasChart({table,column,columns,type,unit}: {table:CanvasTable;column:number;columns?:number[];type:"bar"|"line";unit:string}) {
-  const selected=columns??[column], colors=["#22c55e","#38bdf8","#f59e0b","#a78bfa","#fb7185","#2dd4bf"];
+// Sampled from the supplied light-mode palette, in its top-to-bottom order.
+const LIGHT_CHART_COLORS=["#578cd6","#41c3ed","#02b880","#e9b542","#e20d5b","#a251b3","#e57f32","#00be9d","#95a5a6"];
+const DARK_CHART_COLORS=["#22c55e","#38bdf8","#f59e0b","#a78bfa","#fb7185","#2dd4bf"];
+export function CanvasChart({table,column,columns,type,unit,colorMode="light"}: {table:CanvasTable;column:number;columns?:number[];type:"bar"|"line";unit:string;colorMode?:"light"|"dark"}) {
+  const selected=columns??[column], colors=colorMode==="dark"?DARK_CHART_COLORS:LIGHT_CHART_COLORS;
   const series=selected.map(c=>table.rows.map(row=>canvasNumber(row[c]??"")));
   const valid=series.flat().filter((v):v is number=>v!==null);
   if(!valid.length)return <p role="status">この列には描画できる数値がありません。元データを確認してください。</p>;
@@ -38,7 +42,7 @@ export function CanvasChart({table,column,columns,type,unit}: {table:CanvasTable
     {[0,1,2,3,4].map(t=>{const value=low+(high-low)*t/4;return <g key={t}><line x1="65" x2="720" y1={y(value)} y2={y(value)} stroke="currentColor" opacity=".15"/><text x="58" y={y(value)+4} textAnchor="end" fill="currentColor" fontSize="10">{axisFormat.format(value)}</text></g>;})}
     <line x1="65" x2="720" y1={y(0)} y2={y(0)} stroke="currentColor" opacity=".5"/>
     {series.map((values,s)=>values.map((value,i)=><g key={`${s}-${i}`}>
-      {value!==null && (type==="bar"?<rect x={x(i)-step*.32+s*step*.64/selected.length} y={Math.min(y(value),y(0))} width={Math.max(1,step*.64/selected.length)} height={Math.max(1,Math.abs(y(value)-y(0)))} fill={colors[s]}><title>{`${seriesName(selected[s])} ${table.rows[i][0]}: ${valueFormat.format(value)} ${unit}`}</title></rect>:<>
+      {value!==null && (type==="bar"?<rect x={x(i)-step*.32+s*step*.64/selected.length} y={Math.min(y(value),y(0))} width={Math.max(1,step*.64/selected.length)} height={Math.max(1,Math.abs(y(value)-y(0)))} fill={colorMode==="light"&&selected.length===1?colors[i%colors.length]:colors[s]}><title>{`${seriesName(selected[s])} ${table.rows[i][0]}: ${valueFormat.format(value)} ${unit}`}</title></rect>:<>
         {i>0 && values[i-1]!==null && <line x1={x(i-1)} y1={y(values[i-1]!)} x2={x(i)} y2={y(value)} stroke={colors[s]} strokeDasharray={s?`${s*3} 3`:undefined} strokeWidth="3"/>}
         <circle cx={x(i)} cy={y(value)} r="4" fill={colors[s]}><title>{`${seriesName(selected[s])} ${table.rows[i][0]}: ${valueFormat.format(value)} ${unit}`}</title></circle>
       </>)}
@@ -48,6 +52,9 @@ export function CanvasChart({table,column,columns,type,unit}: {table:CanvasTable
 }
 
 export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{threadId:string;initialContent?:string;chatContext?:string;onClose:()=>void}) {
+  const {resolvedTheme}=useTheme();
+  const [chartColorMode,setChartColorMode]=useState<"light"|"dark">("light");
+  useEffect(()=>{setChartColorMode(resolvedTheme==="dark"?"dark":"light");},[resolvedTheme]);
   const [doc,setDoc]=useState<CanvasDocument>({threadId,title:"レポート",content:initialContent??"",...canvasImportedMetadata(initialContent??""),chartType:"bar",tableIndex:0,valueColumn:1,version:0});
   const [saved,setSaved]=useState("");
   const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[editing,setEditing]=useState(false);
@@ -166,7 +173,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
         {!table?<p>本文にMarkdownの表がありません。</p>:missing.length?<p role="status" className="rounded border border-amber-500 p-2 text-sm">グラフ表示には「{missing.join("」「")}」の入力・確定が必要です。薄文字の候補は、Tabまたは「採用」で確定してください。</p>:(doc.valueColumns??[doc.valueColumn]).some(c=>c>=table.headers.length)?<p>数値列を選び直してください。</p>:<>
           <p className="break-words text-sm">単位：{doc.unit} ／ 対象期間：{doc.period}<br/>出典：{doc.source}</p>
           <div className="grid grid-cols-2 gap-2">{(doc.valueColumns??[doc.valueColumn]).map(column=>{const numbers=table.rows.map(row=>canvasNumber(row[column]??"")),valid=numbers.filter((n):n is number=>n!==null);return <div key={column} className="rounded border border-slate-400 p-3 text-sm"><strong>{table.headers[column]}</strong><p>取得済み：{valid.length} / {numbers.length}件</p>{valid.length>0&&<p>最大：{Math.max(...valid).toLocaleString()} {doc.unit}<br/>最小：{Math.min(...valid).toLocaleString()} {doc.unit}</p>}{valid.length<numbers.length&&<p className="text-amber-500">未取得あり</p>}</div>;})}</div>
-          <CanvasChart table={table} column={doc.valueColumn} columns={doc.valueColumns} type={doc.chartType} unit={doc.unit}/>
+          <CanvasChart table={table} column={doc.valueColumn} columns={doc.valueColumns} type={doc.chartType} unit={doc.unit} colorMode={chartColorMode}/>
           <div className="overflow-x-auto"><table className="w-full border-collapse text-left text-xs"><caption className="mb-2 text-left font-medium">元データ（本文の表・最大100行）</caption><thead><tr>{table.headers.map((h,i)=><th key={i} className="border p-2">{h}</th>)}</tr></thead><tbody>{table.rows.map((row,i)=><tr key={i}>{row.map((cell,j)=><td key={j} className="border p-2">{cell||"未取得"}</td>)}</tr>)}</tbody></table></div>
         </>}
       </fieldset>
