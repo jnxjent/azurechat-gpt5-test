@@ -12,6 +12,8 @@ assert.match(salesforceReadText({ok:true,status:'query_explanation',query_explan
 assert.equal(salesforceReadText({status:'conversation'}),'どうぞ、ご質問ください。');
 assert.match(salesforceReadText({error_kind:'field_unresolved',field_candidates:[{label:'請求先',api_name:'Billing__c'}]}),/Billing__c/);
 assert.equal(salesforceReadText({error:'private_server_error'}),undefined);
+assert.match(salesforceReadText({error_kind:'personal_oauth_authorization_required'},true),/\/salesforce\/connect/);
+assert.match(salesforceReadText({error_kind:'personal_binding_invalid'},true),/管理者/);
 assert.match(salesforceReadInstruction,/ページの行数から件数や合計を計算してはいけません/);
 const metadata={zero_reason:'no_rows',account_candidates:[{id:'001'}],truncated:true,total_count:null,aggregation_result:body.aggregation_result,resolved_fields:[],context_applied:{applied:true}};
 for(const [key,value] of Object.entries(metadata))assert.deepEqual(salesforceReadMetadata(metadata)[key],value);

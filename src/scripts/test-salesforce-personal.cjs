@@ -3,9 +3,12 @@ const crypto = require('node:crypto');
 const file = path.resolve(__dirname, '../features/common/services/salesforce-personal.ts');
 const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
 const loaded = { exports: {} };
+const accessModule = { exports: {} };
+new Function('module', 'exports', ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../features/common/services/salesforce-access.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(accessModule, accessModule.exports);
+const access = accessModule.exports;
 const principal = '11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';
 let user = { email: 'a@example.com', salesforcePrincipal: principal };
-new Function('require', 'module', 'exports', code)(id => id === 'server-only' ? {} : id === '@/features/auth-page/helpers' ? { getCurrentUser: async () => user } : require(id), loaded, loaded.exports);
+new Function('require', 'module', 'exports', code)(id => id === './salesforce-access' ? access : id === 'server-only' ? {} : id === '@/features/auth-page/helpers' ? { getCurrentUser: async () => user } : require(id), loaded, loaded.exports);
 async function main() {
   const profileModule = { exports: {} };
   const profileCode = ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../features/auth-page/salesforce-principal.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
@@ -79,6 +82,23 @@ with tempfile.TemporaryDirectory() as directory:
     const skills = loadGuard('features/skills/execution/skill-search-tools.ts');
     const tool = skills.createSkillSearchTools({ email: user.email, threadId: 'same', userMessage: 'count', signal: new AbortController().signal });
     assert.equal((await tool.execute('salesforce', 'count')).reason, 'personal_route_not_enabled');
+    // Every SF-enabled Web user selects the personal path, even before mapping
+    // or OAuth enrollment exists. Missing identity must never select shared SF.
+    process.env.SF_PERSONAL_SCOPE = 'whitelist';
+    process.env.SF_WHITELIST_EMAILS = 'a@example.com,b@example.com';
+    process.env.SF_PERSONAL_USERS_JSON = '[]';
+    user = { email: 'b@example.com', salesforcePrincipal: principal };
+    assert.equal(await api.isPersonalSalesforceUser(), true);
+    assert.equal(api.personalSalesforceForEmail(user.email), true);
+    assert.ok((await api.salesforcePersonalHeaders(url, user.email, 'thread'))['X-AC-Identity']);
+    user = { email: 'b@example.com' };
+    assert.equal(await api.isPersonalSalesforceUser(), true);
+    await assert.rejects(() => api.salesforcePersonalHeaders(url, user.email, 'thread'));
+    user = { email: 'outsider@example.com', salesforcePrincipal: principal };
+    assert.equal(await api.isPersonalSalesforceUser(), false);
+    assert.equal(api.personalSalesforceForEmail(user.email), false);
+    delete process.env.SF_PERSONAL_SCOPE;
+    delete process.env.SF_WHITELIST_EMAILS;
     console.log('PASS personal Salesforce: session identity, request binding, fresh nonce, TLS, and rejection of shared Gateway responses');
   } finally {
     for (const [key, value] of [['SF_PERSONAL_MODE', original.mode], ['SF_PERSONAL_SIGNING_KEY', original.key], ['SF_PERSONAL_SNAPSHOT_POLICY', original.policy]]) {

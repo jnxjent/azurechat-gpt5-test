@@ -29,6 +29,7 @@ function summaryText(summary: any, personal=false): string {
 export function salesforceReadText(body: any, personal=false): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const kind = body.error_kind || body.error;
+  if (kind === "personal_oauth_authorization_required") return "Salesforceへの初回接続、または再接続が必要です。[Salesforce本人接続を設定する](/salesforce/connect)。接続後、このチャットで同じ質問を送信してください。";
   if (typeof kind === "string" && kind.startsWith("personal_")) return "Salesforce本人接続を確認できないため検索を中止しました。管理者に本人接続の設定を確認してください。共通アカウントでは代用しません。";
   if (kind && errorMessages[kind]) {
     const message = typeof body.clarification === "string" ? body.clarification : errorMessages[kind];

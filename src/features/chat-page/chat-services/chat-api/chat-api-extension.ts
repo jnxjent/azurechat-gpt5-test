@@ -770,7 +770,7 @@ async function runSfDirect(props: {
       });
     }
   } catch (e: any) {
-    if (personal) return salesforceTextStream("Salesforce本人接続を確認できなかったため検索を中止しました。共通アカウントでは代用しません。管理者に本人接続の設定を確認してください。", signal);
+    if (personal) return salesforceTextStream("Salesforce本人接続を確認できなかったため検索を中止しました。[本人接続を確認する](/salesforce/connect)。接続済みでも続く場合は、管理者に設定の確認を依頼してください。", signal);
     sfError = "Salesforce gateway request failed: " + String(e);
     console.error("[SF] Gateway request failed", {
       error: e instanceof Error ? e.name : "unknown",

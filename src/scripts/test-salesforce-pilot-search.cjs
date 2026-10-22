@@ -10,7 +10,7 @@ function load(relative, stubs) {
 async function main() {
   Object.assign(process.env, { NEXTAUTH_URL: 'https://ac.example.com', SF_PERSONAL_MODE: 'false', SF_PERSONAL_USERS_JSON: '[]', SF_PERSONAL_TEST_SEARCH_USERS_JSON: JSON.stringify([{ principal, email: user.email }]), SF_PERSONAL_AUTH_METHOD: 'oauth', SF_PERSONAL_SNAPSHOT_POLICY: 'strict', SF_PERSONAL_SIGNING_KEY: 'x'.repeat(40), SF_PERSONAL_GATEWAY_BASE_URL: 'https://gateway.example.com', SF_GATEWAY_BASE_URL: 'https://shared.example.com' });
   const helpers = { userSession: async () => user, getCurrentUser: async () => user };
-  const personal = load('features/common/services/salesforce-personal.ts', { 'server-only': {}, '@/features/auth-page/helpers': helpers });
+  const personal = load('features/common/services/salesforce-personal.ts', { 'server-only': {}, './salesforce-access': load('features/common/services/salesforce-access.ts', {}), '@/features/auth-page/helpers': helpers });
   const route = load('app/(authenticated)/api/salesforce/test-search/route.ts', { '@/features/auth-page/helpers': helpers, '@/features/common/services/salesforce-access': { isSalesforceAllowedEmail: () => true }, '@/features/common/services/salesforce-personal': personal, '@/features/common/services/salesforce-read-result': load('features/common/services/salesforce-read-result.ts', {}) });
   const threads = [];
   global.fetch = async (url, options) => {

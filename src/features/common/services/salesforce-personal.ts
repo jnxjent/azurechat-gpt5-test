@@ -1,5 +1,10 @@
 import "server-only";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { isSalesforceAllowedEmail } from "./salesforce-access";
+
+function allSalesforceUsers() {
+  return personalSalesforceEnabled() && process.env.SF_PERSONAL_SCOPE === "whitelist";
+}
 
 export function personalSalesforceEnabled() {
   return process.env.SF_PERSONAL_MODE === "true";
@@ -13,6 +18,7 @@ export function personalSalesforceUsers(): Array<{ principal: string; email: str
 }
 
 export function personalSalesforceForEmail(email: string) {
+  if (allSalesforceUsers()) return isSalesforceAllowedEmail(email);
   return personalSalesforceUsers().some(v => v.email === email.trim().toLowerCase());
 }
 
@@ -25,7 +31,7 @@ export async function salesforceConnectionHeaders(url: URL, email: string, metho
   const user = await getCurrentUser();
   const users = JSON.parse(process.env.SF_PERSONAL_CONNECT_USERS_JSON ?? "[]");
   if (!Array.isArray(users) || !user.salesforcePrincipal || user.email.trim().toLowerCase() !== email.trim().toLowerCase() ||
-      !users.some(v => v?.principal?.toLowerCase() === user.salesforcePrincipal?.toLowerCase() && v?.email?.trim().toLowerCase() === email.trim().toLowerCase()) ||
+      !(allSalesforceUsers() ? isSalesforceAllowedEmail(user.email) : users.some(v => v?.principal?.toLowerCase() === user.salesforcePrincipal?.toLowerCase() && v?.email?.trim().toLowerCase() === email.trim().toLowerCase())) ||
       process.env.SF_PERSONAL_AUTH_METHOD !== "oauth" || process.env.SF_PERSONAL_SNAPSHOT_POLICY !== "strict") throw Error("Connection enrollment is not authorized");
   return signSalesforceRequest({ principal: user.salesforcePrincipal, email, thread: "", url, method }, process.env.SF_PERSONAL_SIGNING_KEY ?? "");
 }
@@ -34,6 +40,7 @@ export async function isPersonalSalesforceUser() {
   if (!personalSalesforceEnabled()) return false;
   const { getCurrentUser } = await import("@/features/auth-page/helpers");
   const user = await getCurrentUser();
+  if (allSalesforceUsers()) return isSalesforceAllowedEmail(user.email);
   // Matching either attribute enrolls the request; an identity mismatch must
   // fail in the signer, never select the shared connection instead.
   return personalSalesforceUsers().some(v => v.email === user.email.trim().toLowerCase() || v.principal === user.salesforcePrincipal?.toLowerCase());
@@ -83,7 +90,7 @@ export async function salesforcePersonalHeaders(url: URL, email: string, thread:
   }
   const { getCurrentUser } = await import("@/features/auth-page/helpers");
   const user = await getCurrentUser();
-  if (!user.salesforcePrincipal || user.email.trim().toLowerCase() !== email.trim().toLowerCase() || !personalSalesforceUsers().some(v=>v.principal===user.salesforcePrincipal?.toLowerCase()&&v.email===user.email.trim().toLowerCase())) {
+  if (!user.salesforcePrincipal || user.email.trim().toLowerCase() !== email.trim().toLowerCase() || !(allSalesforceUsers() ? isSalesforceAllowedEmail(user.email) : personalSalesforceUsers().some(v=>v.principal===user.salesforcePrincipal?.toLowerCase()&&v.email===user.email.trim().toLowerCase()))) {
     throw new Error("Salesforce本人接続にはMicrosoftアカウントでログインし直してください。");
   }
   if (url.protocol !== "https:" && !(process.env.NODE_ENV === "development" && url.hostname === "127.0.0.1")) {
