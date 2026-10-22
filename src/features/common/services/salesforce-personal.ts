@@ -16,6 +16,20 @@ export function personalSalesforceForEmail(email: string) {
   return personalSalesforceUsers().some(v => v.email === email.trim().toLowerCase());
 }
 
+/** Connection enrollment does not enable personal queries or history filtering. */
+export async function salesforceConnectionHeaders(url: URL, email: string, method = "GET") {
+  if (!["/api/sf/connection", "/api/sf/oauth/start"].includes(url.pathname) || url.search ||
+      (url.pathname === "/api/sf/connection" ? method !== "GET" : method !== "POST") ||
+      url.origin !== new URL(personalSalesforceBase()).origin || url.protocol !== "https:") throw Error("Invalid connection endpoint");
+  const { getCurrentUser } = await import("@/features/auth-page/helpers");
+  const user = await getCurrentUser();
+  const users = JSON.parse(process.env.SF_PERSONAL_CONNECT_USERS_JSON ?? "[]");
+  if (!Array.isArray(users) || !user.salesforcePrincipal || user.email.trim().toLowerCase() !== email.trim().toLowerCase() ||
+      !users.some(v => v?.principal?.toLowerCase() === user.salesforcePrincipal?.toLowerCase() && v?.email?.trim().toLowerCase() === email.trim().toLowerCase()) ||
+      process.env.SF_PERSONAL_AUTH_METHOD !== "oauth" || process.env.SF_PERSONAL_SNAPSHOT_POLICY !== "strict") throw Error("Connection enrollment is not authorized");
+  return signSalesforceRequest({ principal: user.salesforcePrincipal, email, thread: "", url, method }, process.env.SF_PERSONAL_SIGNING_KEY ?? "");
+}
+
 export async function isPersonalSalesforceUser() {
   if (!personalSalesforceEnabled()) return false;
   const { getCurrentUser } = await import("@/features/auth-page/helpers");

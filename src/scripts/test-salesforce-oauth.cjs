@@ -9,8 +9,14 @@ function load(relative, stubs) {
 }
 async function main() {
   Object.assign(process.env, { SF_PERSONAL_MODE: 'true', SF_PERSONAL_AUTH_METHOD: 'oauth', SF_PERSONAL_SNAPSHOT_POLICY: 'strict', SF_PERSONAL_SIGNING_KEY: 'x'.repeat(40), SF_PERSONAL_GATEWAY_BASE_URL: 'https://gateway.example.com', SF_GATEWAY_BASE_URL: 'https://shared.example.com', SF_PERSONAL_AUTH_BASE: 'https://test.salesforce.com', SF_PERSONAL_USERS_JSON: JSON.stringify([{ principal, email: user.email }]) });
+  process.env.SF_PERSONAL_MODE = 'false';
+  process.env.SF_PERSONAL_USERS_JSON = '[]';
+  process.env.SF_PERSONAL_CONNECT_USERS_JSON = JSON.stringify([{ principal, email: user.email }]);
   const helpers = { userSession: async () => user, getCurrentUser: async () => user };
   const personal = load('features/common/services/salesforce-personal.ts', { 'server-only': {}, '@/features/auth-page/helpers': helpers });
+  assert.equal(await personal.isPersonalSalesforceUser(), false);
+  assert.deepEqual(await personal.salesforcePersonalHeaders(new URL('https://gateway.example.com/api/sf/query_nl'), user.email, 'thread'), {});
+  await assert.rejects(() => personal.salesforceConnectionHeaders(new URL('https://gateway.example.com/api/sf/query_nl'), user.email));
   const route = load('app/(authenticated)/api/salesforce/connection/start/route.ts', { '@/features/auth-page/helpers': helpers, '@/features/common/services/salesforce-access': { isSalesforceAllowedEmail: () => true }, '@/features/common/services/salesforce-personal': personal });
   let target = 'https://test.salesforce.com/services/oauth2/authorize?state=test';
   global.fetch = async (url, options) => {
@@ -36,6 +42,6 @@ async function main() {
   const signed = personal.signSalesforceRequest({ principal, email: 'a@example.com', thread: '', url: new URL('https://gateway.example.com/api/sf/connection') }, 'x'.repeat(40));
   personal.assertPersonalSalesforceResponse(new Response('{}', { headers: responseHeaders }), signed);
   assert.throws(() => personal.assertPersonalSalesforceResponse(new Response('{}', { headers: { ...responseHeaders, 'X-SF-Connection-Mode': 'personal-jwt' } }), signed));
-  console.log('Salesforce OAuth Web entry, signed identity, origin, redirect and mode checks passed');
+  console.log('Salesforce OAuth connection-only enrollment with queries/history disabled, signed identity, origin, redirect and mode checks passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -5,6 +5,7 @@ export default function SalesforceConnectPage() {
     <form action="/api/salesforce/connection/start" method="post">
       <button type="submit" className="rounded bg-primary px-4 py-2 text-primary-foreground">Salesforceに接続する</button>
     </form>
-    <p>接続完了後はAzureChatへ戻り、新しい会話で検索してください。</p>
+    <p>今回は本人接続の登録だけを行います。検索方法と過去の履歴の表示は変わりません。</p>
+    <a href="/api/salesforce/connection" className="underline">登録後の接続状態を確認する</a>
   </main>;
 }

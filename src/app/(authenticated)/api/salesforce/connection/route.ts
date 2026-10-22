@@ -1,6 +1,6 @@
 import { userSession } from "@/features/auth-page/helpers";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
-import { isPersonalSalesforceUser, personalSalesforceBase, salesforcePersonalHeaders, assertPersonalSalesforceResponse } from "@/features/common/services/salesforce-personal";
+import { personalSalesforceBase, salesforceConnectionHeaders, assertPersonalSalesforceResponse } from "@/features/common/services/salesforce-personal";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -9,12 +9,11 @@ export async function GET() {
   const user = await userSession();
   if (!user) return Response.json({ error: "ログインしてください。" }, { status: 401, headers });
   if (!isSalesforceAllowedEmail(user.email)) return Response.json({ error: "Salesforceの利用は許可されていません。" }, { status: 403, headers });
-  if (!await isPersonalSalesforceUser()) return Response.json({ mode: "disabled", connected: false }, { headers });
   try {
     const base = personalSalesforceBase();
     if (!base) throw Error("missing_gateway");
     const url = new URL("/api/sf/connection", base);
-    const personalHeaders = await salesforcePersonalHeaders(url, user.email, "");
+    const personalHeaders = await salesforceConnectionHeaders(url, user.email);
     const response = await fetch(url, { headers: { ...personalHeaders, "X-User-Email": user.email.trim().toLowerCase() }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(30000) });
     if (response.ok) assertPersonalSalesforceResponse(response, personalHeaders);
     const data = await response.json();
