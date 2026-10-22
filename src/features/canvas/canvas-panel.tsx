@@ -8,6 +8,7 @@ import { Undo2, Redo2, MoreHorizontal, Printer, ImageDown, Copy } from "lucide-r
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/features/ui/dropdown-menu";
 import { CanvasDocument, CanvasTable, canvasNumber, canvasTables, canvasMetadataSuggestions, canvasImportedMetadata, canvasStep } from "./canvas-rules";
 import { exportCanvasChart, printCanvas } from "./canvas-export";
+import { CanvasShareDialog } from "./canvas-share-dialog";
 
 export function CanvasSuggestionInput({value,suggestion,onChange,className,maxLength,placeholder,id}:{value:string;suggestion:string;onChange:(value:string)=>void;className:string;maxLength:number;placeholder:string;id:string}) {
   const available=!value&&!!suggestion;
@@ -63,6 +64,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
   const [library,setLibrary]=useState<Array<{threadId:string;title:string;updatedAt?:string}>|null>(null),[search,setSearch]=useState("");
   const [instruction,setInstruction]=useState("");
   const [exporting,setExporting]=useState(false);
+  const [sharing,setSharing]=useState(false);
   const reportRef=useRef<HTMLDivElement>(null),updating=useRef(false);
   function changeDoc(next:CanvasDocument){setUndo(items=>[doc,...items].slice(0,20));setRedo([]);setDoc(next);}
   function step(direction:"undo"|"redo") {const next=canvasStep(doc,undo,redo,direction);setDoc(next.doc);setUndo(next.past);setRedo(next.future);setInstruction("");setNotice(direction==="undo"?"前の内容に戻しました。「更新」で保存できます。":"次の内容へ進みました。「更新」で保存できます。");}
@@ -130,6 +132,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
         <button type="button" aria-label="進む（Redo）" title="進む（Redo）" disabled={!redo.length||loading||busy} className="rounded border px-3 py-1 text-sm disabled:opacity-50" onClick={()=>step("redo")}><Redo2 className="inline h-4 w-4"/> 進む</button>
         <button type="button" className="rounded border px-3 py-1 text-sm" onClick={()=>void loadCollection()}>本人の一覧</button>
         <button type="button" disabled={loading||busy} className="rounded bg-primary px-3 py-1 text-sm text-primary-foreground disabled:opacity-50" onClick={()=>void save()}>{busy?"更新中…":"更新"}</button>
+        <button type="button" disabled={loading||busy} className="rounded border px-3 py-1 text-sm disabled:opacity-50" onClick={()=>setSharing(true)}>共有</button>
         <button type="button" disabled={busy} className="rounded border px-3 py-1 text-sm" onClick={()=>{if(!dirty||window.confirm("未保存の変更を破棄して閉じますか？"))onClose();}}>閉じる</button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild><button type="button" aria-label="Canvasの出力メニュー" title="出力メニュー" disabled={loading||busy||exporting} className="rounded border p-2 disabled:opacity-50"><MoreHorizontal className="h-5 w-5"/></button></DropdownMenuTrigger>
@@ -146,6 +149,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
         </DropdownMenu>
       </div>
     </div>
+    {sharing&&<CanvasShareDialog threadId={threadId} version={doc.version} dirty={dirty} onClose={()=>setSharing(false)}/>}
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 pb-10">
       {loading&&<p role="status">保存したCanvasを読み込み中…</p>}
       {error&&<p role="alert" className="text-sm text-red-500">{error}</p>}

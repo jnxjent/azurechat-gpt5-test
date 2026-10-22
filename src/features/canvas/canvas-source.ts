@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { personalSalesforceBase, signSalesforceRequest, assertPersonalSalesforceResponse } from "@/features/common/services/salesforce-personal";
 import { validateCanvas, type CanvasDocument } from "./canvas-rules";
 type CanvasShareUser = { principal: string; email: string };
-export type Source = { provider: "salesforce"; query: string; thread: string; proof: string };
+export type Source = { provider: "salesforce"; query: string; thread: string; proof: string; proofs?:string[]; savedCanvas?:{threadId:string;version:number} };
 export class CanvasSourceError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
@@ -34,8 +34,13 @@ async function retrieveSalesforce(user: CanvasShareUser, query: string): Promise
 async function revalidateSalesforce(source: Source, user: CanvasShareUser) {
   try {
     if (source.provider !== "salesforce") return false;
-    const result = await gateway(user, "/api/sf/revalidate_shared", source.thread, JSON.stringify({ proof: source.proof }));
-    return result.ok === true && result.allowed === true;
+    const proofs=Array.from(new Set(source.proofs??[source.proof]));
+    if(!proofs.length || proofs.length>20)return false;
+    for(const proof of proofs) {
+      const result = await gateway(user, "/api/sf/revalidate_shared", source.thread, JSON.stringify({ proof }));
+      if(result.ok!==true || result.allowed!==true)return false;
+    }
+    return true;
   } catch { return false; }
 }
 

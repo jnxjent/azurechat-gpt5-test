@@ -6,7 +6,7 @@ import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-
 import { retrieveCanvasSource, revalidateCanvasSource, type Source } from "./canvas-source";
 import { validateCanvas, type CanvasDocument } from "./canvas-rules";
 
-export type CanvasShareUser = { principal: string; email: string };
+export type CanvasShareUser = { principal: string; email: string; name?:string };
 type SharedCanvas = { id: string; userId: "CANVAS_SHARE"; type: "SHARED_CANVAS"; ttl: -1; owner: CanvasShareUser; readers: CanvasShareUser[]; enabled: boolean; revision: number; updatedAt: string; document: CanvasDocument; source: Source; seal: string; _etag?: string };
 const partition = "CANVAS_SHARE";
 export class CanvasShareError extends Error {
@@ -15,7 +15,7 @@ export class CanvasShareError extends Error {
 function participants(): CanvasShareUser[] {
   const values = JSON.parse(process.env.CANVAS_SHARE_USERS_JSON ?? "[]");
   if (!Array.isArray(values) || values.some(v => !v || typeof v.principal !== "string" || !/^[a-f0-9-]{36}:[a-f0-9-]{36}$/i.test(v.principal) || typeof v.email !== "string" || !v.email.includes("@"))) throw new CanvasShareError(503, "共有対象者の設定を確認してください。");
-  const users = values.map(v => ({ principal: v.principal.toLowerCase(), email: v.email.trim().toLowerCase() }));
+  const users = values.map(v => ({ principal: v.principal.toLowerCase(), email: v.email.trim().toLowerCase(), ...(typeof v.name==="string"&&v.name.trim()?{name:v.name.trim().slice(0,120)}:{}) }));
   if (new Set(users.map(v => v.principal)).size !== users.length || new Set(users.map(v => v.email)).size !== users.length) throw new CanvasShareError(503, "共有対象者の登録が重複しています。");
   return users;
 }
@@ -27,6 +27,26 @@ export async function currentCanvasShareUser(): Promise<CanvasShareUser> {
   return found;
 }
 function sameUser(a: CanvasShareUser, b: CanvasShareUser) { return a.principal === b.principal && a.email === b.email; }
+function availableReaders(user:CanvasShareUser) {
+  return participants().filter(v=>v.principal.split(":")[0]===user.principal.split(":")[0] && !sameUser(v,user) && isSalesforceAllowedEmail(v.email));
+}
+function resolveReaders(user:CanvasShareUser, input:unknown):CanvasShareUser[] {
+  if(!Array.isArray(input)||input.length>50||input.some(v=>typeof v!=="string"))throw new CanvasShareError(400,"共有先を確認してください。");
+  const available=availableReaders(user);
+  return Array.from(new Set((input as string[]).map(v=>v.trim().toLowerCase()).filter(Boolean))).map(email=>{
+    const found=available.find(v=>v.email===email);
+    if(!found)throw new CanvasShareError(400,"共有先の候補から選び直してください。");
+    return found;
+  });
+}
+export async function searchCanvasSharePeople(query:string) {
+  const user=await currentCanvasShareUser();
+  if(query.length>120)throw new CanvasShareError(400,"検索は120文字以内で入力してください。");
+  const normalize=(s:string)=>s.normalize("NFKC").toLocaleLowerCase().replace(/\s/g,"");
+  const needle=normalize(query);
+  const matches=availableReaders(user).filter(v=>normalize(`${v.name??""} ${v.email}`).includes(needle)).sort((a,b)=>(a.name??a.email).localeCompare(b.name??b.email,"ja"));
+  return {items:matches.slice(0,20).map(v=>({email:v.email,name:v.name??v.email})),hasMore:matches.length>20};
+}
 function signature(record: Omit<SharedCanvas, "seal"> | SharedCanvas) {
   const secret = process.env.SF_PERSONAL_SIGNING_KEY ?? "";
   if (secret.length < 32) throw new CanvasShareError(503, "Canvas共有の署名設定を確認してください。");
@@ -51,7 +71,41 @@ function authorized(record: SharedCanvas, user: CanvasShareUser) {
   if (!owner && (!record.enabled || !record.readers.some(v => sameUser(v, user)))) throw new CanvasShareError(404, "Canvasが見つからないか、共有が解除されています。");
   return owner;
 }
-function management(record: SharedCanvas, owner: boolean) { return { revision: record.revision, updatedAt: record.updatedAt, owner, ...(owner ? { readers: record.readers.map(v => v.email), enabled: record.enabled } : {}) }; }
+function management(record: SharedCanvas, owner: boolean) { return { revision: record.revision, updatedAt: record.updatedAt, owner, ...(owner ? { readers: record.readers.map(v => v.email), enabled: record.enabled, savedCanvas:Boolean(record.source.savedCanvas) } : {}) }; }
+
+function savedShareId(user:CanvasShareUser,threadId:string) {
+  if(!threadId || threadId.length>200)throw new CanvasShareError(400,"Canvasを指定してください。");
+  const secret=process.env.SF_PERSONAL_SIGNING_KEY??"";
+  if(secret.length<32)throw new CanvasShareError(503,"共有設定を確認してください。");
+  const hex=createHmac("sha256",secret).update("saved-canvas-share-v1:"+JSON.stringify([user.principal,user.email,threadId])).digest("hex");
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-4${hex.slice(13,16)}-8${hex.slice(17,20)}-${hex.slice(20,32)}`;
+}
+async function savedShare(user:CanvasShareUser,threadId:string) {
+  const id=savedShareId(user,threadId);
+  try { const record=await read(id); if(!sameUser(record.owner,user)||record.source.savedCanvas?.threadId!==threadId)throw new CanvasShareError(403,"共有設定を確認できません。"); return {id,record}; }
+  catch(error) { if(error instanceof CanvasShareError && error.status===404)return {id,record:undefined}; throw error; }
+}
+export async function getSavedCanvasSharing(threadId:string) {
+  const user=await currentCanvasShareUser(), {id,record}=await savedShare(user,threadId);
+  return record?{id,...management(record,true)}:{id:null,revision:null,readers:[],enabled:false};
+}
+export async function publishSavedCanvas(input:{threadId?:unknown;version?:unknown;revision?:unknown;readers?:unknown;enabled?:unknown}) {
+  if(typeof input.threadId!=="string" || !Number.isSafeInteger(input.version) || Number(input.version)<1 || typeof input.enabled!=="boolean")throw new CanvasShareError(400,"Canvasを保存してから共有してください。");
+  const user=await currentCanvasShareUser(), {id,record}=await savedShare(user,input.threadId);
+  if((record?.revision??null)!==input.revision)throw new CanvasShareError(409,"共有設定が変更されています。共有画面を開き直してください。");
+  const readers=resolveReaders(user,input.readers);
+  if(input.enabled&&!readers.length)throw new CanvasShareError(400,"共有先を選択してください。");
+  const {savedCanvasSource}=await import("./saved-canvas-source");
+  const snapshot=record&&!input.enabled?{document:record.document,source:record.source}:await savedCanvasSource(input.threadId,Number(input.version));
+  if(input.enabled&&!await revalidateCanvasSource(snapshot.source,user))throw new CanvasShareError(403,"現在のSalesforce権限でこのCanvasを共有できません。");
+  const next:SharedCanvas={id:`shared-canvas-${id}`,userId:partition,type:"SHARED_CANVAS",ttl:-1,owner:user,readers,enabled:input.enabled,revision:(record?.revision??0)+1,updatedAt:new Date().toISOString(),...snapshot,seal:""};
+  next.seal=signature(next);
+  try {
+    if(record)await HistoryContainer().item(record.id,partition).replace(next,{accessCondition:{type:"IfMatch",condition:record._etag!}});
+    else await HistoryContainer().items.create(next);
+  } catch(error) { if([409,412].includes((error as {code:number}).code))throw new CanvasShareError(409,"共有設定が変更されています。共有画面を開き直してください。"); throw error; }
+  return {id,...management(next,true)};
+}
 export async function createSharedCanvas(query: string) {
   const user = await currentCanvasShareUser(), id = randomUUID();
   const snapshot = await retrieveCanvasSource(user, { provider: "salesforce", query: query.trim() });
@@ -76,15 +130,19 @@ export async function changeSharedCanvas(id: string, input: { revision?: unknown
   let next = { ...record };
   if (input.action === "access") {
     if (!Array.isArray(input.readers) || input.readers.length > 50 || input.readers.some(v => typeof v !== "string") || typeof input.enabled !== "boolean") throw new CanvasShareError(400, "共有先を確認してください。");
-    const emails = Array.from(new Set((input.readers as string[]).map(v => v.trim().toLowerCase()).filter(Boolean)));
-    const available = participants();
-    const readers = emails.map(email => available.find(v => v.email === email && v.principal.split(":")[0] === user.principal.split(":")[0]));
-    if (readers.some(v => !v)) throw new CanvasShareError(400, "未登録の共有先が含まれています。");
+    const readers = resolveReaders(user,input.readers);
     if (input.enabled && !await revalidateCanvasSource(record.source, user)) throw new CanvasShareError(403, "共有前に元データの参照権限を確認してください。");
     next.readers = readers as CanvasShareUser[]; next.enabled = input.enabled;
   } else if (input.action === "refresh") {
-    next = { ...next, ...await retrieveCanvasSource(user, { provider: record.source.provider, query: record.source.query }) };
-    next.document.version = record.document.version + 1;
+    if(record.source.savedCanvas) {
+      const {savedCanvasSource}=await import("./saved-canvas-source");
+      const snapshot=await savedCanvasSource(record.source.savedCanvas.threadId);
+      if(!await revalidateCanvasSource(snapshot.source,user))throw new CanvasShareError(403,"元データの参照権限を確認できません。");
+      next={...next,...snapshot};
+    } else {
+      next = { ...next, ...await retrieveCanvasSource(user, { provider: record.source.provider, query: record.source.query }) };
+      next.document.version = record.document.version + 1;
+    }
   } else throw new CanvasShareError(400, "操作を確認してください。");
   next.revision++; next.updatedAt = new Date().toISOString(); delete next._etag;
   next.seal = signature(next);

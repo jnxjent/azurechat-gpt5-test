@@ -9,6 +9,7 @@ const stubs={
   '@/features/ui/dropdown-menu':{},
   'react-markdown':()=>null,
   'remark-gfm':()=>{},
+  './canvas-share-dialog':{},
   '@/features/common/services/openai':{OpenAIInstance:()=>({chat:{completions:{create:async()=>({choices:[{finish_reason:'stop',message:{content:proposedContent}}]})}}})},
   '@/features/auth-page/helpers':{userHashedId:async()=>{if(!owner)throw Error('User not found');return owner;}},
   '@/features/chat-page/chat-services/models':{CHAT_THREAD_ATTRIBUTE:'CHAT_THREAD'},

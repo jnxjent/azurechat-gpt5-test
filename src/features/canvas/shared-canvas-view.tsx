@@ -4,12 +4,13 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CanvasChart } from "./canvas-panel";
 import { canvasTables, type CanvasDocument } from "./canvas-rules";
-type Report = { revision: number; updatedAt: string; owner: boolean; readers?: string[]; enabled?: boolean; restricted: boolean; document?: CanvasDocument; query?: string };
+import { CanvasPeoplePicker } from "./canvas-share-dialog";
+type Report = { revision: number; updatedAt: string; owner: boolean; readers?: string[]; enabled?: boolean; savedCanvas?:boolean; restricted: boolean; document?: CanvasDocument; query?: string };
 export function SharedCanvasView({ id }: { id: string }) {
   const [report, setReport] = useState<Report | null>(null), [error, setError] = useState("");
   const [notice, setNotice] = useState(""), [busy, setBusy] = useState(false);
   const [operationError, setOperationError] = useState("");
-  const [readers, setReaders] = useState<string | null>(null), [enabled, setEnabled] = useState<boolean | null>(null);
+  const [readers, setReaders] = useState<string[] | null>(null), [enabled, setEnabled] = useState<boolean | null>(null);
   const generation = useRef(0), active = useRef<AbortController | null>(null);
   const endpoint = `/api/canvas/shared/${encodeURIComponent(id)}`;
   const load = useCallback(async (force = false) => {
@@ -41,7 +42,7 @@ export function SharedCanvasView({ id }: { id: string }) {
     if (!report) return; setBusy(true); setNotice(""); setOperationError("");
     generation.current++; active.current?.abort(); active.current = null;
     try {
-      const response = await fetch(endpoint, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: report.revision, action, ...(action === "access" ? { readers: (readers ?? report.readers?.join("\n") ?? "").split(/[,;\n]/).map(v => v.trim()).filter(Boolean), enabled: enabled ?? report.enabled ?? false } : {}) }) });
+      const response = await fetch(endpoint, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: report.revision, action, ...(action === "access" ? { readers: readers ?? report.readers ?? [], enabled: enabled ?? report.enabled ?? false } : {}) }) });
       const data = await response.json();
       if (!response.ok) throw Error(data.error || "更新できませんでした。");
       setReaders(null); setEnabled(null); setNotice(action === "access" ? "共有設定を更新しました。" : "最新データを取得しました。同じURLで表示できます。");
@@ -60,14 +61,14 @@ export function SharedCanvasView({ id }: { id: string }) {
     {report?.restricted && <p role="alert">現在のSalesforce権限を確認できないため、本文は表示していません。共有解除は下の設定から行えます。</p>}
     {report?.owner && <section className="rounded border p-4 space-y-3">
       <h2 className="font-semibold">共有と更新</h2>
-      <label className="block">共有先のメールアドレス（1行に1人）<textarea className="block w-full rounded border bg-background p-2" value={readers ?? report.readers?.join("\n") ?? ""} onChange={e => setReaders(e.target.value)} /></label>
+      <CanvasPeoplePicker selected={readers??report.readers??[]} onChange={setReaders} disabled={busy}/>
       <label className="flex gap-2"><input type="checkbox" checked={enabled ?? report.enabled ?? false} onChange={e => setEnabled(e.target.checked)} />指定した相手への共有を有効にする</label>
       <div className="flex flex-wrap gap-4">
         <button disabled={busy} type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => { void change("access"); }}>共有設定を保存</button>
-        <button disabled={busy} type="button" className="rounded border px-3 py-2" onClick={() => { void change("refresh"); }}>SFから内容を更新</button>
+        <button disabled={busy} type="button" className="rounded border px-3 py-2" onClick={() => { void change("refresh"); }}>{report.savedCanvas?"保存済みCanvasを反映":"SFから内容を更新"}</button>
         <button type="button" className="rounded border px-3 py-2" onClick={() => { void navigator.clipboard.writeText(window.location.href).then(() => setNotice("共有URLをコピーしました。Teamsに貼り付けられます。")).catch(() => setError("アドレス欄からURLをコピーしてください。")); }}>共有URLをコピー</button>
       </div>
-      <p className="text-sm">共有を無効にすると、閲覧者の次回アクセス・再確認時に表示を停止します。更新は同じ依頼で再検索します。取得条件の自動更新は後続で追加します。</p>
+      <p className="text-sm">共有を無効にすると、閲覧者の次回アクセス・再確認時に表示を停止します。{report.savedCanvas?"内容の更新では、元のチャットで保存したCanvasを同じURLへ反映します。":"更新は同じ依頼で再検索します。"}</p>
       {report.query && <p className="text-sm">取得依頼：{report.query}</p>}
     </section>}
     {doc && <article className="prose max-w-none dark:prose-invert">

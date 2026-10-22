@@ -150,6 +150,26 @@ export async function filterSalesforceHistory(messages: ChatMessageModel[], thre
 export function sealCanvas(document: CanvasDocument, owner: string) {
   return signature("canvas-v1:", { owner, document: validateCanvas(document) });
 }
+
+/** Export only authenticated provenance from the saved Canvas's exact dependencies. */
+export async function canvasSalesforceProofs(document: CanvasDocument & {canvasAccessSeal?:string}, owner:string) {
+  if (!personalSalesforceEnabled() || !validCanvasSeal(document,owner,document.canvasAccessSeal) || !document.sourceMessageIds?.length) throw Error("Canvas source unavailable");
+  const messages=await sourceMessages(document.threadId,owner);
+  const selected=messages.filter(m=>document.sourceMessageIds!.includes(m.id));
+  if(selected.length!==new Set(document.sourceMessageIds).size)throw Error("Canvas source unavailable");
+  const proofs=new Set<string>();
+  for(const message of selected) {
+    const access=message.historyAccess;
+    if(!validAccess(access,owner,document.threadId,message.role) || access!.hash!==digest(JSON.stringify({content:message.content,image:message.multiModalImage??"",name:message.name})))throw Error("Canvas source unavailable");
+    if(access!.sf) {
+      const dependencies=access!.dependencies??(access!.proof?[access!.proof]:[]);
+      if(!dependencies.length)throw Error("Canvas source unavailable");
+      dependencies.forEach(proof=>proofs.add(proof));
+    }
+  }
+  if(!proofs.size || proofs.size>20)throw Error("Canvas source unavailable");
+  return Array.from(proofs);
+}
 export function validCanvasSeal(document: CanvasDocument, owner: string, seal?: string) {
   if (!personalSalesforceEnabled()) return true;
   try { return Boolean(seal && equal(seal, sealCanvas(document, owner))); } catch { return false; }
