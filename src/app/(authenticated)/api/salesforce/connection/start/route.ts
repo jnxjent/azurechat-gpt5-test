@@ -7,8 +7,15 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   const headers = { "Cache-Control": "private, no-store" };
-  // Require an intentional same-origin browser action before starting consent.
-  if (request.headers.get("origin") !== new URL(request.url).origin) {
+  // Azure may expose an internal URL to Node. Compare against the configured
+  // public auth origin, never an untrusted forwarded-host header.
+  let expectedOrigin: string;
+  try {
+    expectedOrigin = new URL(process.env.NEXTAUTH_URL ?? request.url).origin;
+  } catch {
+    return Response.json({ error: "接続元サイトの設定を確認してください。" }, { status: 503, headers });
+  }
+  if (request.headers.get("origin") !== expectedOrigin) {
     return Response.json({ error: "同じサイトから接続を開始してください。" }, { status: 403, headers });
   }
   const user = await userSession();

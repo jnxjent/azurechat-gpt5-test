@@ -30,6 +30,15 @@ async function main() {
   assert.equal((await route.POST(request('https://other.example.com'))).status, 403);
   assert.equal(requests, 0);
   assert.equal((await route.POST(request('https://ac.example.com'))).status, 303);
+  process.env.NEXTAUTH_URL = 'https://ac.example.com';
+  const proxied = origin => new Request('http://localhost:3000/api/salesforce/connection/start', { method: 'POST', headers: { origin, 'x-forwarded-host': 'evil.example.com', 'x-forwarded-proto': 'https' } });
+  assert.equal((await route.POST(proxied('https://ac.example.com'))).status, 303);
+  assert.equal((await route.POST(proxied('https://evil.example.com'))).status, 403);
+  assert.equal((await route.POST(proxied('null'))).status, 403);
+  assert.equal((await route.POST(new Request('http://localhost:3000/api/salesforce/connection/start', { method: 'POST' }))).status, 403);
+  process.env.NEXTAUTH_URL = 'invalid-url';
+  assert.equal((await route.POST(proxied('https://ac.example.com'))).status, 503);
+  process.env.NEXTAUTH_URL = 'https://ac.example.com';
   target = 'https://evil.example.com/services/oauth2/authorize';
   assert.equal((await route.POST(request('https://ac.example.com'))).status, 503);
   user = { email: 'a@example.com' };
