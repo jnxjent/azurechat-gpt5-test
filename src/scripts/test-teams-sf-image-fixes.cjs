@@ -12,6 +12,7 @@ function load(file, mocks = {}, globals = {}) {
   vm.runInNewContext(code, { exports, require(name) {
     if (name === 'server-only') return {};
     if (name in mocks) return mocks[name];
+    if (name === './salesforce-access') return load('features/common/services/salesforce-access.ts');
     if (name === '@/features/common/services/salesforce-read-result') return load('features/common/services/salesforce-read-result.ts');
     if (name === '@/features/common/services/salesforce-personal') return load('features/common/services/salesforce-personal.ts');
     return require(name);
