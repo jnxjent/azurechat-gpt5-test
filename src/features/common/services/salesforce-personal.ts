@@ -39,6 +39,20 @@ export async function isPersonalSalesforceUser() {
   return personalSalesforceUsers().some(v => v.email === user.email.trim().toLowerCase() || v.principal === user.salesforcePrincipal?.toLowerCase());
 }
 
+/** Read-only pilot, separate from normal chat enrollment and legacy history. */
+export async function salesforcePilotSearchHeaders(url: URL, email: string, thread: string) {
+  if (url.origin !== new URL(personalSalesforceBase()).origin || url.protocol !== "https:" ||
+      url.pathname !== "/api/sf/query_nl" || !thread ||
+      Array.from(url.searchParams.keys()).some(key => !["q", "mode"].includes(key))) throw Error("Invalid pilot endpoint");
+  const { getCurrentUser } = await import("@/features/auth-page/helpers");
+  const user = await getCurrentUser();
+  const users = JSON.parse(process.env.SF_PERSONAL_TEST_SEARCH_USERS_JSON ?? "[]");
+  if (!Array.isArray(users) || !user.salesforcePrincipal || user.email.trim().toLowerCase() !== email.trim().toLowerCase() ||
+      !users.some(v => v?.principal?.toLowerCase() === user.salesforcePrincipal?.toLowerCase() && v?.email?.trim().toLowerCase() === email.trim().toLowerCase()) ||
+      process.env.SF_PERSONAL_AUTH_METHOD !== "oauth" || process.env.SF_PERSONAL_SNAPSHOT_POLICY !== "strict") throw Error("Pilot search is not authorized");
+  return signSalesforceRequest({ principal: user.salesforcePrincipal, email, thread, url }, process.env.SF_PERSONAL_SIGNING_KEY ?? "");
+}
+
 export function personalSalesforceBase() {
   const base = process.env.SF_PERSONAL_GATEWAY_BASE_URL;
   if (!base || base.replace(/\/+$/, "") === process.env.SF_GATEWAY_BASE_URL?.replace(/\/+$/, "")) throw Error("A separate personal Salesforce Gateway is required during the pilot");
