@@ -10,6 +10,14 @@ export function isSalesforceAccountChoiceReply(message: string, recent: Array<{r
     /^(?:(?:それでは|では|じゃあ)[、,\s]*)?(?:\d{1,2}(?:番|番目)?(?:で|を)?(?:お願いします|選択します|にしてください|です)?[。.!！]?|001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?)$/.test(message.normalize("NFKC").trim());
 }
 
+/** Presentation only. Server-side account authorization uses persisted tool state. */
+export function salesforcePresentationRequest(message: string, recent: Array<{role:string;content:unknown}>): string {
+  if (!isSalesforceAccountChoiceReply(message, recent)) return message;
+  const selection = recent.findIndex(item => item.role === "assistant");
+  const original = recent.slice(selection + 1).find(item => item.role === "user");
+  return typeof original?.content === "string" ? original.content : message;
+}
+
 export function validAccountCandidates(value: unknown): SalesforceAccount[] {
   if (!Array.isArray(value)) return [];
   return value.filter(item => item && accountId.test(item.id) && typeof item.name === "string" && item.name.length <= 255).slice(0, 50);

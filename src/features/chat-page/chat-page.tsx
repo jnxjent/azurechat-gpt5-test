@@ -12,6 +12,7 @@ import { useSession } from "next-auth/react";
 import { FC, useEffect, useRef, useState } from "react";
 import { CanvasPanel } from "@/features/canvas/canvas-panel";
 import { canvasChatContext } from "@/features/canvas/canvas-rules";
+import { salesforcePresentationRequest } from "@/features/common/services/salesforce-account-selection";
 import { ExtensionModel } from "../extensions-page/extension-services/models";
 import { ChatHeader } from "./chat-header/chat-header";
 import {
@@ -65,7 +66,8 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
     const lastUserIndex=messages.map(message=>message.role).lastIndexOf("user");
     const lastUser=messages[lastUserIndex];
     const answer=messages.slice(lastUserIndex+1).reverse().find(message=>message.role==="assistant"&&message.content.trim());
-    const requested=lastUser&&/(?:Canvas|キャンバス)\s*(?:に|で|へ).*(?:まとめ|作成|表示|整理|グラフ)/i.test(lastUser.content);
+    const request=lastUser?salesforcePresentationRequest(lastUser.content,messages.slice(0,lastUserIndex).reverse()):"";
+    const requested=/(?:Canvas|キャンバス)\s*(?:に|で|へ).*(?:まとめ|作成|表示|整理|グラフ|作って)/i.test(request);
     const monthlyReport=answer?.content.startsWith("<!-- salesforce:monthly-report -->");
     if(answer&&!answer.content.startsWith("Salesforceの取引先を選択してください。")&&(requested||monthlyReport))setCanvas({content:answer.content,context:canvasChatContext(messages,answer.content),key:Date.now()});
   },[loading,messages,canvas]);

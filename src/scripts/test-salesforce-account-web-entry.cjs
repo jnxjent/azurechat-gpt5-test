@@ -42,6 +42,15 @@ async function main(){
  const answer=await run('2番で');assert.ok(answer.includes('60,000')&&answer.includes('23,000')&&answer.includes('83,000 円'));assert.ok(answer.startsWith('<!-- salesforce:monthly-report -->'));
  assert.equal(fetches[1].searchParams.get('account_id'),candidates[1].id);assert.ok(fetches[1].searchParams.get('q').includes('2026年1月1日〜3月31日'));assert.equal(modelCalls,0);
  assert.ok(!fetches[0].searchParams.has('account_id'));
+ const brief='J＆T環境の初回訪問用の資料をCanvasで作って';
+ records=[];nextBody={ok:true,status:'needs_account_selection',account_candidates:candidates};
+ await run(brief);
+ assert.equal(fetches.at(-1).searchParams.get('presentation'),'canvas');
+ nextBody={ok:true,object:'Account',items:[{Id:candidates[1].id,Name:candidates[1].name}],count:1,request_plan:{account_name:'J＆T環境',account_id:candidates[1].id}};
+ await run('2番で');
+ assert.equal(fetches.at(-1).searchParams.get('presentation'),'canvas');
+ assert.equal(fetches.at(-1).searchParams.get('account_id'),candidates[1].id);
+ assert.equal(lastSummary.messages.find(item=>item.role==='user').content,brief,'retain document purpose after selecting an account');
  records=[];nextBody={ok:true,status:'needs_account_selection',account_candidates:candidates};await run(original);
  const before=fetches.length;const invalid=await run('9番で');assert.ok(invalid.includes('選び直してください'));assert.equal(fetches.length,before);
  records=[];await run(original);allowed=false;const deniedBefore=fetches.length;await run('2番で');assert.equal(fetches.length,deniedBefore,'whitelist revoked: no Salesforce query');

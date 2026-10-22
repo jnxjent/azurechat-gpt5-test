@@ -695,6 +695,7 @@ async function runSfDirect(props: {
 
   const url = new URL("/api/sf/query_nl", base);
   url.searchParams.set("q", buildSalesforceGatewayQuery(props.accountChoice?.originalRequest ?? userMessage));
+  if (/Canvas|キャンバス/i.test(props.accountChoice?.originalRequest ?? userMessage)) url.searchParams.set("presentation", "canvas");
   if (props.accountChoice) url.searchParams.set("account_id", props.accountChoice.account.id);
   url.searchParams.set("engine", "auto");
   url.searchParams.set("mode", "real");
@@ -870,7 +871,7 @@ async function runSfDirect(props: {
     ...(personal ? [] : history),
     {
       role: "user",
-      content: userMessage,
+      content: props.accountChoice?.originalRequest ?? userMessage,
     },
   ];
 

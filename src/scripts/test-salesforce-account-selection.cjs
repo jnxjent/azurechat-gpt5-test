@@ -1,6 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),assert=require('node:assert/strict');
 function load(relative){const source=ts.transpileModule(fs.readFileSync(path.resolve(__dirname,relative),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;const mod={exports:{}};new Function('require','module','exports',source)(require,mod,mod.exports);return mod.exports;}
-const {accountSelectionText,resolveSalesforceAccountChoice,isSalesforceAccountChoiceReply,salesforceMonthlyReport}=load('../features/common/services/salesforce-account-selection.ts');
+const {accountSelectionText,resolveSalesforceAccountChoice,isSalesforceAccountChoiceReply,salesforceMonthlyReport,salesforcePresentationRequest}=load('../features/common/services/salesforce-account-selection.ts');
 const {canvasTables,canvasNumber,canvasImportedMetadata}=load('../features/canvas/canvas-rules.ts');
 const candidates=[{id:'001A70000058uKbIAI',name:'J&T環境株式会社',billing_city:'東京'},{id:'001RA00001cNvJ7YAK',name:'J&T環境 営業室'}];
 const now=Date.now(),originalRequest='SalesforceからJ&T環境の商談を2026年1〜3月で月別集計しCanvasで棒グラフにしてください。';
@@ -13,6 +13,9 @@ for(const text of ['3番で','001A70000000000IAA','ありがとう','1番で、�
 assert.equal(resolveSalesforceAccountChoice('1',history,now+600001),undefined);
 assert.ok(isSalesforceAccountChoiceReply('99番で',history));
 assert.ok(!isSalesforceAccountChoiceReply('来月に変更してください',history));
+assert.equal(salesforcePresentationRequest('2番で',history),originalRequest);
+assert.equal(salesforcePresentationRequest('別の質問',history),'別の質問');
+assert.equal(salesforcePresentationRequest('2番で',[{role:'assistant',content:'別の会話'},...history]),'2番で');
 assert.equal(resolveSalesforceAccountChoice('1',[{role:'assistant',content:'別の会話'},...history],now),undefined);
 assert.equal(resolveSalesforceAccountChoice('1',[{role:'user',content:'別の依頼'},...history],now),undefined);
 assert.equal(resolveSalesforceAccountChoice('1',[history[0],{role:'tool',content:'{}'},...history.slice(1)],now),undefined);
