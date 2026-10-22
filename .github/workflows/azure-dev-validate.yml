@@ -9,6 +9,7 @@ on:
 
 jobs:
   build:
+    if: github.repository == 'jnxjent/azurechat-gpt5-test' && github.ref == 'refs/heads/testsite/fix-toggle-selfscope-20260323'
     runs-on: ubuntu-latest
 
     steps:
@@ -43,6 +44,7 @@ jobs:
           node scripts/test-salesforce-pilot-search.cjs
           node scripts/test-shared-canvas.cjs
           node scripts/test-canvas-chat-sharing.cjs
+          node scripts/test-canvas-share-save.cjs
           node scripts/test-salesforce-history-access.cjs
           SF_PERSONAL_AUTH_METHOD=oauth node scripts/test-salesforce-history-access.cjs
           node scripts/test-canvas-report-format.cjs

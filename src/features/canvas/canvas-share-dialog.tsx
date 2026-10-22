@@ -26,7 +26,7 @@ export function CanvasPeoplePicker({selected,onChange,disabled=false}:{selected:
   </div>;
 }
 type Sharing={id:string|null;revision:number|null;readers:string[];enabled:boolean};
-export function CanvasShareDialog({threadId,version,dirty,onClose}:{threadId:string;version:number;dirty:boolean;onClose:()=>void}) {
+export function CanvasShareDialog({threadId,version,dirty,saveCanvas,onClose}:{threadId:string;version:number;dirty:boolean;saveCanvas:()=>Promise<number>;onClose:()=>void}) {
   const [sharing,setSharing]=useState<Sharing|null>(null),[selected,setSelected]=useState<string[]>([]),[enabled,setEnabled]=useState(true),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
   useEffect(()=>{
     const controller=new AbortController();
@@ -40,7 +40,8 @@ export function CanvasShareDialog({threadId,version,dirty,onClose}:{threadId:str
   async function save() {
     if(!sharing||busy)return;setBusy(true);setError("");setNotice("");
     try {
-      const response=await fetch("/api/canvas/shared/from-thread",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId,version,revision:sharing.revision,readers:selected,enabled}),cache:"no-store"});
+      const savedVersion=enabled&&dirty?await saveCanvas():version;
+      const response=await fetch("/api/canvas/shared/from-thread",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId,version:savedVersion,revision:sharing.revision,readers:selected,enabled}),cache:"no-store"});
       const data=await response.json();if(!response.ok)throw Error(data.error||"共有を保存できませんでした。");
       setSharing(data);setSelected(data.readers);setEnabled(data.enabled);setNotice(data.enabled?"共有しました。同じURLで閲覧できます。":"共有を解除しました。");
     }catch(error){setError(error instanceof Error?error.message:"共有を保存できませんでした。");}finally{setBusy(false);}
@@ -51,10 +52,10 @@ export function CanvasShareDialog({threadId,version,dirty,onClose}:{threadId:str
     {loading?<p role="status">共有設定を確認中…</p>:sharing&&<>
       <CanvasPeoplePicker selected={selected} onChange={setSelected} disabled={busy}/>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} disabled={busy} onChange={e=>setEnabled(e.target.checked)}/>選択した相手への共有を有効にする</label>
-      {dirty&&<p className="text-sm">Canvasに未保存の変更があります。この画面を閉じ、「更新」で保存してから共有してください。</p>}
-      <button type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy||(enabled&&(dirty||!selected.length))||(!sharing.id&&dirty)} onClick={()=>void save()}>{busy?"保存中…":enabled?"共有を保存":"共有を解除"}</button>
+      {dirty&&enabled&&<p className="text-sm">「共有を保存」で、現在のCanvasも保存して共有します。修正依頼が入力されている場合は、その修正も反映します。</p>}
+      <button type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy||(enabled&&!selected.length)} onClick={()=>void save()}>{busy?"保存中…":enabled?"共有を保存":"共有を解除"}</button>
       {url&&sharing.enabled&&<div className="space-y-2"><label className="block text-sm">共有URL<input readOnly value={url} className="block w-full rounded border bg-background p-2" onFocus={e=>e.target.select()}/></label><button type="button" className="rounded border px-3 py-1" onClick={()=>{void navigator.clipboard.writeText(url).then(()=>setNotice("共有URLをコピーしました。Teamsなどに貼り付けてください。"),()=>setError("URL欄からコピーしてください。"));}}>共有URLをコピー</button></div>}
-      <p className="text-xs text-muted-foreground">保存した本文とグラフを共有します。Canvasを編集した後は、保存してから再び「共有を保存」で同じURLへ反映できます。</p>
+      <p className="text-xs text-muted-foreground">本文とグラフを共有します。Canvasを編集した後も「共有を保存」で、保存と同じURLへの反映をまとめて行えます。</p>
     </>}
     {error&&<p role="alert" className="text-sm text-red-500">{error}</p>}{notice&&<p role="status" className="text-sm">{notice}</p>}
   </DialogContent></Dialog>;

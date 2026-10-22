@@ -111,16 +111,17 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
     window.addEventListener("beforeunload",warn);document.addEventListener("click",navigate,true);
     return()=>{window.removeEventListener("beforeunload",warn);document.removeEventListener("click",navigate,true);};
   },[dirty]);
-  async function save() {
-    if(updating.current)return;
+  async function save(propagateError=false):Promise<number> {
+    if(updating.current)throw Error("Canvasを保存中です。しばらくお待ちください。");
     updating.current=true;setBusy(true);setError("");setNotice("");
     try {
       const item=await updateCanvas(doc,instruction);
       const data={item};
       if(instruction.trim()){setUndo(items=>[doc,...items].slice(0,20));setRedo([]);}
       setDoc(data.item);setSaved(JSON.stringify(data.item));setInstruction("");setEditing(false);setNotice("更新しました。表示中のレポートに反映・保存済みです。");
-      requestAnimationFrame(()=>reportRef.current?.scrollIntoView({behavior:"smooth",block:"start"}));
-    }catch(cause){setError(cause instanceof Error?cause.message:"保存できませんでした。");}finally{updating.current=false;setBusy(false);}
+      if(!propagateError)requestAnimationFrame(()=>reportRef.current?.scrollIntoView({behavior:"smooth",block:"start"}));
+      return item.version;
+    }catch(cause){setError(cause instanceof Error?cause.message:"保存できませんでした。");if(propagateError)throw cause;return doc.version;}finally{updating.current=false;setBusy(false);}
   }
   const input="w-full rounded border border-slate-400 bg-background p-2 text-sm";
   return <aside aria-label="Canvasレポート" className="fixed inset-0 z-50 flex h-full min-h-0 flex-col overflow-hidden border-l-2 border-slate-500 bg-background shadow-xl lg:static lg:z-auto lg:w-[48%] lg:min-w-[360px] lg:shrink-0">
@@ -149,7 +150,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
         </DropdownMenu>
       </div>
     </div>
-    {sharing&&<CanvasShareDialog threadId={threadId} version={doc.version} dirty={dirty} onClose={()=>setSharing(false)}/>}
+    {sharing&&<CanvasShareDialog threadId={threadId} version={doc.version} dirty={dirty} saveCanvas={()=>save(true)} onClose={()=>setSharing(false)}/>}
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 pb-10">
       {loading&&<p role="status">保存したCanvasを読み込み中…</p>}
       {error&&<p role="alert" className="text-sm text-red-500">{error}</p>}
