@@ -1,3 +1,5 @@
+import { sealNonSalesforceCitation, validNonSalesforceCitation, legacyOrigin } from "@/features/common/services/salesforce-history-access";
+import { isPersonalSalesforceUser } from "@/features/common/services/salesforce-personal";
 import { userHashedId } from "@/features/auth-page/helpers";
 import { ServerActionResponse } from "@/features/common/server-action-response";
 import { HistoryContainer } from "@/features/common/services/cosmos";
@@ -36,19 +38,22 @@ export const CreateCitation = async (
 // when calling this method from the extension, you must provide the user as the REST API does not have access to the user
 export const CreateCitations = async (
   models: DocumentSearchResponse[],
-  userId?: string
+  userId?: string,
+  origin: "sf" | "non_sf" = "sf"
 ): Promise<Array<ServerActionResponse<ChatCitationModel>>> => {
   const items: Array<Promise<ServerActionResponse<ChatCitationModel>>> = [];
 
   for (const model of models) {
-    const res = CreateCitation({
+    const item:ChatCitationModel = {
       content: model,
       id: uniqueId(),
       type: CHAT_CITATION_ATTRIBUTE,
       userId: userId || (await userHashedId()),
-    });
-
-    items.push(res);
+    };
+    // These callers are server-side document searches, including Teams paths
+    // without a Web session. Provenance does not grant cross-owner access.
+    if (origin === "non_sf" && process.env.SF_PERSONAL_MODE === "true" && (process.env.SF_PERSONAL_SIGNING_KEY?.length??0)>=32) item.nonSalesforceSeal=sealNonSalesforceCitation(item);
+    items.push(CreateCitation(item));
   }
 
   return await Promise.all(items);
@@ -60,8 +65,9 @@ export const FindCitationByID = async (
   try {
     const querySpec: SqlQuerySpec = {
       query:
-        "SELECT * FROM root r WHERE r.type=@type AND r.id=@id",
+        "SELECT * FROM root r WHERE r.type=@type AND r.id=@id AND r.userId=@userId",
       parameters: [
+        { name: "@userId", value: await userHashedId() },
         {
           name: "@type",
           value: CHAT_CITATION_ATTRIBUTE,
@@ -83,6 +89,9 @@ export const FindCitationByID = async (
         errors: [{ message: "Citation not found" }],
       };
     }
+
+    // Legacy citations have no trustworthy SF provenance; do not expose their bodies.
+    if(await isPersonalSalesforceUser() && !validNonSalesforceCitation(resources[0]) && legacyOrigin({id,content:JSON.stringify(resources[0].content),threadId:""},await userHashedId())!=="non_sf")return {status:"ERROR",errors:[{message:"保存された出典の権限を再検証できません。再検索してください。"}]};
 
     return {
       status: "OK",

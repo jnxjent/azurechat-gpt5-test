@@ -6,6 +6,7 @@ const ts = require('typescript');
 let stored, docs = [], captured, loads = 0;
 const ok = response => ({ status: 'OK', response });
 const services = {
+  isPersonalSalesforceUser: async () => false,
   prepareSkillsForChat: async () => ({selected:[]}), shouldRunSkillSearch: () => false, skillAuthoringInstructions: () => undefined, skillReferenceLabel: () => "", formatSkillContext: () => "",
   getCurrentUser: async () => ({ name: 'Local test', email: 'local@example.test' }),
   EnsureChatThreadOperation: async () => ok({ id: 'thread-local', extension: [], personaMessage: '' }),

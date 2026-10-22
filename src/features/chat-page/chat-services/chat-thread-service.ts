@@ -1,4 +1,5 @@
 "use server";
+import { isPersonalSalesforceUser } from "@/features/common/services/salesforce-personal";
 import "server-only";
 import { deleteCanvasForThread } from "@/features/canvas/canvas-service";
 
@@ -53,6 +54,12 @@ export const FindAllChatThreadForCurrentUser = async (): Promise<
         partitionKey: await userHashedId(),
       })
       .fetchAll();
+    if(await isPersonalSalesforceUser()) {
+      const {protectedThreadIds}=await import("@/features/common/services/salesforce-history-access");
+      const owner=await userHashedId();
+      const protectedIds=await protectedThreadIds(owner);
+      for(const thread of resources)if(protectedIds.has(thread.id)){thread.name="権限確認が必要なチャット";thread.personaMessage="";thread.personaMessageTitle="";delete thread.originalImageFileName;delete thread.lastImageFileName;}
+    }
     return {
       status: "OK",
       response: resources,
@@ -101,6 +108,11 @@ export const FindChatThreadForCurrentUser = async (
         status: "NOT_FOUND",
         errors: [{ message: `Chat thread not found` }],
       };
+    }
+
+    if(await isPersonalSalesforceUser()) {
+      const {protectedThreadIds}=await import("@/features/common/services/salesforce-history-access");
+      if((await protectedThreadIds(await userHashedId())).has(id)){resources[0].name="権限確認が必要なチャット";resources[0].personaMessage="";resources[0].personaMessageTitle="";delete resources[0].originalImageFileName;delete resources[0].lastImageFileName;}
     }
 
     return {

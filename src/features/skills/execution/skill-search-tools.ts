@@ -1,3 +1,4 @@
+import { personalSalesforceForEmail } from "@/features/common/services/salesforce-personal";
 import "server-only";
 import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
@@ -20,6 +21,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
   const contextResults: string[] = [];
   const trace: Array<{ source: SearchSource; status: string; truncated?: boolean }> = [];
   async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown): Promise<SkillSearchResult> {
+    if (source === "salesforce" && personalSalesforceForEmail(props.email)) return { source, status: "unavailable", reason: "personal_route_not_enabled", message: "本人別Salesforce接続はWebの通常検索で検証中です。Skill経由の検索は停止しています。" };
     const started = Date.now();
     let result: SkillSearchResult;
     try {
@@ -175,7 +177,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
     const baseFilter = `(chatThreadId eq '${props.threadId.replace(/'/g, "''")}' or isSlDoc eq true)`;
     const result = await ExtensionSimilaritySearch({ searchText: stripSlSearchTargetTerms(query, target), vectors: ["embedding"], apiKey, searchName, indexName, filter: scope ? `(${baseFilter}) and (${scope})` : baseFilter, deptLower: context.deptLower, userHash: context.userHash, top: 6 });
     if (result.status !== "OK") return { source, status: "error" };
-    const citations = await CreateCitations(FormatCitations(result.response));
+    const citations = await CreateCitations(FormatCitations(result.response),undefined,"non_sf");
     const data = citations.flatMap(item => item.status === "OK" ? [{ id: item.response.id, name: item.response.content.document.metadata, content: item.response.content.document.pageContent.slice(0, 2400) }] : []);
     if (result.response.length && !data.length) return { source, status: "error", message: "参照元の保存に失敗しました。" };
     return { source, status: data.length ? "ok" : "empty", data, message: "検索に一致した資料の抜粋です。文書全体・全件を読んだ結果ではありません。" };

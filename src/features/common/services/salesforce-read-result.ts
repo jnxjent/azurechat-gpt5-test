@@ -20,28 +20,29 @@ function filtersText(filters: unknown): string {
   return Array.isArray(filters) && filters.length ? filters.map(f => `${String(f.label)} ${String(f.op)} ${typeof f.value === "boolean" ? f.value ? "チェックあり" : "チェックなし" : String(f.value)}`).join("、") : "なし";
 }
 
-function summaryText(summary: any): string {
+function summaryText(summary: any, personal=false): string {
   const target = summary?.object === "User" ? "ユーザー" : "取引先";
-  const scope = summary?.scope === "all" ? `接続ユーザーの参照権限内の全${target}` : summary?.scope_notice || "指定した担当範囲";
+  const scope = summary?.scope === "all" ? `${personal ? "あなたが閲覧できる" : "接続ユーザーの参照権限内の"}全${target}` : summary?.scope_notice || "指定した担当範囲";
   return `対象：${scope}${summary?.account_id ? `（Account ID：${summary.account_id}）` : ""}\n条件：${filtersText(summary?.filters)}\n集計・取得方法：${summary?.method || "未確認"}${summary?.user_type_policy ? `\nユーザー種別：${summary.user_type_policy}` : ""}`;
 }
 
-export function salesforceReadText(body: any): string | undefined {
+export function salesforceReadText(body: any, personal=false): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const kind = body.error_kind || body.error;
+  if (typeof kind === "string" && kind.startsWith("personal_")) return "Salesforce本人接続を確認できないため検索を中止しました。管理者に本人接続の設定を確認してください。共通アカウントでは代用しません。";
   if (kind && errorMessages[kind]) {
     const message = typeof body.clarification === "string" ? body.clarification : errorMessages[kind];
     const choices = Array.isArray(body.field_candidates) ? body.field_candidates.map((f: any) => `- ${f.label}（${f.api_name}）`).join("\n") : "";
     return message + (choices ? `\n\n${choices}` : "");
   }
   if (body.status === "conversation") return "どうぞ、ご質問ください。";
-  if (body.status === "query_explanation" && body.query_explanation) return `直前の検索条件は次のとおりです。\n\n${summaryText(body.query_explanation)}`;
+  if (body.status === "query_explanation" && body.query_explanation) return `直前の検索条件は次のとおりです。\n\n${summaryText(body.query_explanation,personal)}`;
   const aggregate = body.aggregation_result;
   if (aggregate?.func === "COUNT" && aggregate.source === "soql_count" && Number.isSafeInteger(aggregate.value) && aggregate.value >= 0) {
     const user = body.object === "User";
     const summary = body.execution_summary || body.context_applied?.summary || { object: body.object, scope: aggregate.scope, filters: aggregate.filters_summary, method: "Salesforce COUNT()" };
     const fields = Array.isArray(body.resolved_fields) && body.resolved_fields.length ? `\n対象項目：${body.resolved_fields.map((f: any) => `${f.label}（${f.api_name}）`).join("、")}` : "";
-    return `${user ? "ユーザー（User）" : "取引先（Account）"}の件数は **${aggregate.value.toLocaleString("ja-JP")} ${user ? "名" : "件"}**です。\n\n${summaryText(summary)}${fields}${body.context_applied?.applied ? "\n直前の検索対象・担当範囲・条件を引き継ぎ、今回の条件を追加しました。" : ""}`;
+    return `${user ? "ユーザー（User）" : "取引先（Account）"}の件数は **${aggregate.value.toLocaleString("ja-JP")} ${user ? "名" : "件"}**です。\n\n${summaryText(summary,personal)}${fields}${body.context_applied?.applied ? "\n直前の検索対象・担当範囲・条件を引き継ぎ、今回の条件を追加しました。" : ""}`;
   }
   return undefined;
 }

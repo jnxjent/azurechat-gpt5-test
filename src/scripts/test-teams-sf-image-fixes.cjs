@@ -13,6 +13,7 @@ function load(file, mocks = {}, globals = {}) {
     if (name === 'server-only') return {};
     if (name in mocks) return mocks[name];
     if (name === '@/features/common/services/salesforce-read-result') return load('features/common/services/salesforce-read-result.ts');
+    if (name === '@/features/common/services/salesforce-personal') return load('features/common/services/salesforce-personal.ts');
     return require(name);
   }, process, console, Buffer, AbortSignal, URL, URLSearchParams, ...globals });
   return exports;

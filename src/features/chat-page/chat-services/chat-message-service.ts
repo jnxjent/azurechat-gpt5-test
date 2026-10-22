@@ -1,4 +1,5 @@
 "use server";
+import { isPersonalSalesforceUser } from "@/features/common/services/salesforce-personal";
 import "server-only";
 
 import { userHashedId } from "@/features/auth-page/helpers";
@@ -7,6 +8,7 @@ import { uniqueId } from "@/features/common/util";
 import { SqlQuerySpec } from "@azure/cosmos";
 import { HistoryContainer } from "../../common/services/cosmos";
 import { ChatMessageModel, ChatRole, MESSAGE_ATTRIBUTE } from "./models";
+import { filterSalesforceHistory, sealHistoryMessage } from "@/features/common/services/salesforce-history-access";
 
 export const FindTopChatMessagesForCurrentUser = async (
   chatThreadID: string,
@@ -46,7 +48,7 @@ export const FindTopChatMessagesForCurrentUser = async (
 
     return {
       status: "OK",
-      response: resources,
+      response: await isPersonalSalesforceUser() ? await filterSalesforceHistory(resources, chatThreadID, await userHashedId()) : resources,
     };
   } catch (e) {
     return {
@@ -93,7 +95,7 @@ export const FindAllChatMessagesForCurrentUser = async (
 
     return {
       status: "OK",
-      response: resources,
+      response: await isPersonalSalesforceUser() ? await filterSalesforceHistory(resources, chatThreadID, await userHashedId()) : resources,
     };
   } catch (e) {
     return {
@@ -113,12 +115,14 @@ export const CreateChatMessage = async ({
   role,
   chatThreadId,
   multiModalImage,
+  salesforceSnapshot,
 }: {
   name: string;
   role: ChatRole;
   content: string;
   chatThreadId: string;
   multiModalImage?: string;
+  salesforceSnapshot?: ChatMessageModel["salesforceSnapshot"];
 }): Promise<ServerActionResponse<ChatMessageModel>> => {
   const userId = await userHashedId();
   const modelToSave: ChatMessageModel = {
@@ -132,6 +136,7 @@ export const CreateChatMessage = async ({
     threadId: chatThreadId,
     userId: userId,
     multiModalImage: multiModalImage,
+    ...(salesforceSnapshot ? { salesforceSnapshot } : {}),
   };
   return await UpsertChatMessage(modelToSave);
 };
@@ -147,6 +152,12 @@ export const UpsertChatMessage = async (
       type: MESSAGE_ATTRIBUTE,
       isDeleted: false,
     };
+    // Ignore caller-provided seals. A new message gets a server-bound content seal.
+    delete modelToSave.historyAccess;
+    if (await isPersonalSalesforceUser()) {
+      modelToSave.userId = await userHashedId();
+      modelToSave.historyAccess = sealHistoryMessage(modelToSave);
+    }
 
     const { resource } =
       await HistoryContainer().items.upsert<ChatMessageModel>(modelToSave);

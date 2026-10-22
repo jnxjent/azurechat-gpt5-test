@@ -1,3 +1,4 @@
+import { isPersonalSalesforceUser } from "@/features/common/services/salesforce-personal";
 import { userHashedId } from "@/features/auth-page/helpers";
 import { HistoryContainer } from "@/features/common/services/cosmos";
 import { CHAT_THREAD_ATTRIBUTE } from "@/features/chat-page/chat-services/models";
@@ -17,6 +18,15 @@ export async function POST(request:Request) {
     if(typeof data.instruction!=="string"||!data.instruction.trim()||data.instruction.length>2000)throw new TypeError("依頼を2000文字以内で入力してください。");
     const {resources}=await HistoryContainer().items.query({query:"SELECT c.id FROM c WHERE c.id=@id AND c.userId=@user AND c.type=@type AND c.isDeleted=false",parameters:[{name:"@id",value:doc.threadId},{name:"@user",value:userId},{name:"@type",value:CHAT_THREAD_ATTRIBUTE}]},{partitionKey:userId}).fetchAll();
     if(!resources.length)return Response.json({error:"チャットが見つかりません。"},{status:404,headers});
+    if(await isPersonalSalesforceUser()) {
+      const access=await import("@/features/common/services/salesforce-history-access");
+      const {canvasIdFor}=await import("@/features/canvas/canvas-service");
+      let stored;
+      try{const result=await HistoryContainer().item(canvasIdFor(doc.threadId),userId).read();stored=result.resource;}catch(error){if((error as {code:number}).code!==404)throw error;}
+      let permitted=false;
+      try { permitted=(!stored||await access.canReadCanvas(stored,userId)) && Boolean(await access.canvasSources(doc,userId,stored)); } catch {}
+      if(!permitted)return Response.json({error:"現在のSalesforce権限で再検証できないため、CanvasをAI修正に使用できません。"},{status:403,headers});
+    }
     const conclusionFirst=/結論/.test(data.instruction)&&/先頭|最初|冒頭/.test(data.instruction)&&!/結論[^。\n]*(?:不要|削除|省略)/.test(data.instruction);
     const response=await OpenAIInstance().chat.completions.create({
       model:process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME!,max_completion_tokens:12000,

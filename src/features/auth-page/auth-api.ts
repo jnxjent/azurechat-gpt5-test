@@ -12,6 +12,8 @@ import { getEffectiveSlUserEmail, resolveSlAccess } from "@/lib/sl-dept";
 // 管理者同意を確認したうえで DESKNETS_WEB_MEETING_ENABLED=true にしてから有効化する。
 const WEB_MEETING_SCOPE = ["Calendars.ReadWrite", "OnlineMeetings.Read"];
 
+import { salesforcePrincipalFromProfile } from "./salesforce-principal";
+
 const AAD_SCOPE = [
   "openid",
   "profile",
@@ -187,6 +189,9 @@ export const options: NextAuthOptions = {
       }
 
       const p: any = profile ?? {};
+      if (account) {
+        (token as any).salesforcePrincipal = salesforcePrincipalFromProfile(account.provider, p, process.env.AZURE_AD_TENANT_ID);
+      }
       const profileEmail = p.email || p.preferred_username || p.upn || null;
       if (!token.email && profileEmail) token.email = String(profileEmail);
 
@@ -214,6 +219,7 @@ export const options: NextAuthOptions = {
 
     async session({ session, token }) {
       if (session.user) {
+        (session.user as any).salesforcePrincipal = (token as any).salesforcePrincipal;
         (session.user as any).isAdmin = (token as any).isAdmin as boolean;
         session.user.email = token.email as string;
         session.user.name = token.name as string;

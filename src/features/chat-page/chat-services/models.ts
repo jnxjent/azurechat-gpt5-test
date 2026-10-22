@@ -7,6 +7,8 @@ export const MESSAGE_ATTRIBUTE = "CHAT_MESSAGE";
 export const CHAT_CITATION_ATTRIBUTE = "CHAT_CITATION";
 
 export interface ChatMessageModel {
+  salesforceSnapshot?: { orgId: string; userId: string; retrievedAt: string; proof?: string; proofs?: string[] };
+  historyAccess?: import("@/features/common/services/salesforce-history-access").HistoryAccess;
   id: string;
   createdAt: Date;
   isDeleted: boolean;
@@ -74,6 +76,7 @@ export type MenuItemsGroup = {
 } & ChatThreadModel;
 
 export type ChatCitationModel = {
+  nonSalesforceSeal?: string;
   id: string;
   content: any;
   userId: string;

@@ -6,6 +6,7 @@ import {
   AzureChatCompletion,
   AzureChatCompletionAbort,
   ChatThreadModel,
+  ChatMessageModel,
 } from "../models";
 import {
   CitationMarkupItem,
@@ -146,6 +147,7 @@ export const OpenAIStream = (props: {
   chatThread: ChatThreadModel;
   memoryReference?: string;
   initialToolResults?: string[];
+  historySnapshot?: ChatMessageModel["salesforceSnapshot"];
 }) => {
   const encoder = new TextEncoder();
 
@@ -189,13 +191,17 @@ export const OpenAIStream = (props: {
           content || "",
           pendingToolResults
         );
-        const repairedContent = repairBrokenMarkdownUrls(
+        let repairedContent = repairBrokenMarkdownUrls(
           citationNormalizedContent
         );
+        const salesforceSnapshot = (runner as ChatCompletionStreamingRunner & { salesforceSnapshot?: ChatMessageModel["salesforceSnapshot"] }).salesforceSnapshot ?? props.historySnapshot;
         if (repairedContent !== citationNormalizedContent) {
           console.warn(
             "[open-ai-stream] repaired broken markdown URL in finalContent"
           );
+        }
+        if (salesforceSnapshot) {
+          repairedContent += `\n\n取得日時：${salesforceSnapshot.retrievedAt}\n※取得時点の記録です。保存後に権限を再検証できない場合は非表示になります。`;
         }
 
         try {
@@ -207,6 +213,7 @@ export const OpenAIStream = (props: {
               content: result,
               role: "tool",
               chatThreadId: chatThread.id,
+              ...(salesforceSnapshot ? { salesforceSnapshot } : {}),
             });
           }
 
@@ -215,6 +222,7 @@ export const OpenAIStream = (props: {
             content: repairedContent,
             role: "assistant",
             chatThreadId: chatThread.id,
+            ...(salesforceSnapshot ? { salesforceSnapshot } : {}),
           });
         } catch (error) {
           // A persistence failure must not leave the browser stream open
@@ -312,6 +320,7 @@ export const OpenAIStream = (props: {
               content: lastMessage,
               role: "assistant",
               chatThreadId: chatThread.id,
+              salesforceSnapshot: (runner as ChatCompletionStreamingRunner & {salesforceSnapshot?:ChatMessageModel["salesforceSnapshot"]}).salesforceSnapshot ?? props.historySnapshot,
             });
           }
 

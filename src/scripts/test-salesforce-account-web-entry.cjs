@@ -5,8 +5,8 @@ const ok=response=>({status:'OK',response});
 const original='Salesforceから取引先「J＆T環境㈱」の商談を取得し、完了予定日2026年1月1日〜3月31日の商談金額を月別合計してCanvasで棒グラフにしてください。';
 const candidates=[{id:'001RA00001cNvJ7YAK',name:'Ｊ＆Ｔ環境株式会社 営業本部'},{id:'001A70000058uKbIAI',name:'J＆T環境株式会社　ソリューション営業室'}];
 const services={
+ resolveOfficeChatRoute:()=> 'extensions',
  AI_NAME:'Assistant',CHAT_DEFAULT_SYSTEM_PROMPT:'',
- resolveOfficeChatRoute:()=> 'extensions', shouldRouteToDeskNetsAgent:()=>false,
  getCurrentUser:async()=>({name:'test',email:'test@example.invalid'}),
  EnsureChatThreadOperation:async()=>ok({id:'test-thread',extension:['sf-test'],personaMessage:''}),
  prepareSkillsForChat:async()=>({selected:[]}),shouldRunSkillSearch:()=>false,readFiscalPeriod:()=>undefined,
@@ -30,7 +30,8 @@ function load(relative){const filename=path.resolve(__dirname,'..',relative);if(
  if(name.startsWith('@/')||name.startsWith('../')||name.startsWith('./'))return services;
  return normal(name);
 };mod._compile(ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,esModuleInterop:true}}).outputText,filename);cache.set(filename,mod.exports);return mod.exports;}
-global.fetch=async url=>{fetches.push(new URL(url));return {status:nextStatus,ok:nextStatus>=200&&nextStatus<300,json:async()=>nextBody};};
+let responseHeaders=new Headers(),lastRequestHeaders;
+global.fetch=async (url,options)=>{fetches.push(new URL(url));lastRequestHeaders=options?.headers;return {headers:responseHeaders,status:nextStatus,ok:nextStatus>=200&&nextStatus<300,json:async()=>nextBody};};
 async function main(){
  const {ChatAPIEntry}=load('features/chat-page/chat-services/chat-api/chat-api.ts');
  const run=async message=>(await ChatAPIEntry({id:'test-thread',message},new AbortController().signal)).text();
@@ -61,6 +62,19 @@ async function main(){
  assert.ok(exact.includes('47,846')&&exact.includes('COUNT()'));assert.equal(modelCalls,beforeCount);
  nextBody={ok:true,status:'conversation',items:[],count:0};
  assert.equal(await run('では、質問を変えます。'),'どうぞ、ご質問ください。');assert.equal(modelCalls,beforeCount);
+ // Personal mode must reject an old/shared Gateway even when it returns valid COUNT JSON.
+ process.env.SF_PERSONAL_MODE='true';process.env.SF_PERSONAL_SNAPSHOT_POLICY='strict';process.env.SF_PERSONAL_SIGNING_KEY='x'.repeat(40);process.env.SF_GATEWAY_BASE_URL='https://gateway.example.com';
+ const principal='11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';
+ process.env.SF_PERSONAL_USERS_JSON=JSON.stringify([{principal,email:'test@example.invalid'}]);process.env.SF_PERSONAL_GATEWAY_BASE_URL='https://personal.example.com';
+ services.getCurrentUser=async()=>({name:'test',email:'test@example.invalid',salesforcePrincipal:principal});
+ records=[];nextBody={ok:true,object:'Account',count:0,items:[],aggregation_result:{func:'COUNT',value:47846,scope:'all',source:'soql_count'}};
+ const rejected=await run('取引先の登録件数を教えて');assert.ok(!rejected.includes('47,846'));
+ assert.ok(lastRequestHeaders['X-AC-Identity']&&lastRequestHeaders['X-AC-Signature']);
+ responseHeaders=new Headers({'X-SF-Connection-Mode':'personal-jwt','X-AC-Principal':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'});
+ records=[];const personal=await run('取引先の登録件数を教えて');assert.ok(personal.includes('47,846')&&personal.includes('あなたが閲覧できる'));
+ services.getCurrentUser=async()=>({name:'test',email:'test@example.invalid'});
+ records=[];const noPrincipalCalls=fetches.length;await run('取引先の登録件数を教えて');assert.equal(fetches.length,noPrincipalCalls);
+ delete process.env.SF_PERSONAL_MODE;delete process.env.SF_PERSONAL_SNAPSHOT_POLICY;delete process.env.SF_PERSONAL_SIGNING_KEY;
  console.log('PASS actual Web entry: account selection, owner scope, authoritative COUNT without summary LLM, conversation');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

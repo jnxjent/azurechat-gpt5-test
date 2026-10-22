@@ -189,7 +189,7 @@ export const ChatApiRAG = async (props: {
 
   if (documentResponse?.status === "OK") {
     const withoutEmbedding = FormatCitations(documentResponse.response);
-    const citationResponse = await CreateCitations(withoutEmbedding);
+    const citationResponse = await CreateCitations(withoutEmbedding,undefined,"non_sf");
     citationResponse.forEach((c) => {
       if (c.status === "OK") {
         documents.push(c.response);
@@ -359,7 +359,7 @@ ${userMessage}
         }
 
         const withoutEmbedding = FormatCitations(searchResult.response);
-        const citationResponse = await CreateCitations(withoutEmbedding);
+        const citationResponse = await CreateCitations(withoutEmbedding,undefined,"non_sf");
 
         return searchResult.response
           .map((r, i) => {

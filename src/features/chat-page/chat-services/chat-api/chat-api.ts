@@ -1,5 +1,7 @@
-// src/features/chat-page/chat-services/chat-api/chat-api.ts
 "use server";
+import type { ChatMessageModel } from "../models";
+import { isPersonalSalesforceUser } from "@/features/common/services/salesforce-personal";
+// src/features/chat-page/chat-services/chat-api/chat-api.ts
 import "server-only";
 
 // ★ SF拡張の Extension ID（環境変数化）
@@ -151,16 +153,16 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
     await CreateChatMessage({ name: user.name, content: props.message, role: "user", chatThreadId: currentChatThread.id });
     const { runner, directContent, citationResults } = await runSkillSearch({ chatThread: currentChatThread, skills: selectedSkills, message: props.message, history, email: user.email, signal, selectedAccount: skillChoice?.account, originalRequest: skillChoice?.originalRequest, selectedAccountRecord });
     if (directContent) {
-      for (const content of citationResults) await CreateChatMessage({ name: AI_NAME, content, role: "tool", chatThreadId: currentChatThread.id });
-      await CreateChatMessage({ name: AI_NAME, content: directContent, role: "assistant", chatThreadId: currentChatThread.id });
+      for (const content of citationResults) await CreateChatMessage({ name: AI_NAME, content, salesforceSnapshot: historySource(history), role: "tool", chatThreadId: currentChatThread.id });
+      await CreateChatMessage({ name: AI_NAME, content: directContent, salesforceSnapshot: historySource(history), role: "assistant", chatThreadId: currentChatThread.id });
       return new Response(`event: finalContent\ndata: ${JSON.stringify({ type: "finalContent", response: directContent })}\n\n`, { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" } });
     }
     if (!runner) throw new Error("Skill search response missing");
-    return new Response(OpenAIStream({ runner, initialToolResults: citationResults, chatThread: currentChatThread, memoryReference: skillReferenceLabel(selectedSkills) }), {
+    return new Response(OpenAIStream({ runner, historySnapshot: historySource(history), initialToolResults: citationResults, chatThread: currentChatThread, memoryReference: skillReferenceLabel(selectedSkills) }), {
       headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
     });
   }
-  const automaticMemoryContext = await prepareAutomaticMemory(props.message, signal);
+  const automaticMemoryContext = await isPersonalSalesforceUser() ? "" : await prepareAutomaticMemory(props.message, signal);
   const hasSalesforceExtension =
     Boolean(SF_EXTENSION_ID) &&
     currentChatThread.extension.includes(SF_EXTENSION_ID);
@@ -389,7 +391,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
       break;
   }
 
-  const readableStream = OpenAIStream({ runner, chatThread: currentChatThread,
+  const readableStream = OpenAIStream({ runner, historySnapshot: salesforceRouting.route === "normal" ? historySource(history) : undefined, chatThread: currentChatThread,
     memoryReference: skillReferenceLabel(selectedSkills) });
   return new Response(readableStream, {
     headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
@@ -404,7 +406,10 @@ const _getHistory = async (chatThread: ChatThreadModel) => {
     // DB → OpenAI 形式へ
     const mapped = mapOpenAIChatMessages(historyResults).reverse();
     // ★ここで一発サニタイズ（孤立 tool を除去）
-    return fixOrphanToolsInline(mapped);
+    const result = fixOrphanToolsInline(mapped);
+    const sources = historyResults.filter(m => m.historyAccess?.sf === true && m.salesforceSnapshot).map(m => ({...m.salesforceSnapshot!,proof:undefined,proofs:m.historyAccess!.dependencies??(m.historyAccess!.proof?[m.historyAccess!.proof!]:[])}));
+    if (sources.length) Object.defineProperty(result, "salesforceSnapshot", {value:{...sources[0],proof:undefined,proofs:Array.from(new Set(sources.flatMap(source=>source.proofs??(source.proof?[source.proof]:[]))))}});
+    return result;
   }
   console.error("🔴 Error on getting history:", historyResponse.errors);
   return [];
@@ -536,3 +541,5 @@ const _getExtensions = async (props: {
 
   return extension;
 };
+
+function historySource(history: unknown): ChatMessageModel["salesforceSnapshot"] { return (history as {salesforceSnapshot?:ChatMessageModel["salesforceSnapshot"]}).salesforceSnapshot; }

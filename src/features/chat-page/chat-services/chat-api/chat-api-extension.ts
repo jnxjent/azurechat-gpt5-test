@@ -1,5 +1,6 @@
 "use server";
 import "server-only";
+import { salesforcePersonalHeaders, assertPersonalSalesforceResponse, isPersonalSalesforceUser, personalSalesforceBase } from "@/features/common/services/salesforce-personal";
 import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 
 import { OpenAIInstance } from "@/features/common/services/openai";
@@ -422,7 +423,7 @@ export const ChatApiExtensions = async (props: {
           if (filenameMatchedDocs.length > 0) {
             const docsToUse = filenameMatchedDocs.slice(0, effectiveTop);
             const withoutEmbeddingFN = FormatCitations(docsToUse);
-            const citationResponseFN = await CreateCitations(withoutEmbeddingFN);
+            const citationResponseFN = await CreateCitations(withoutEmbeddingFN,undefined,"non_sf");
             return docsToUse
               .map((r, i) => {
                 const cit = citationResponseFN[i];
@@ -458,7 +459,7 @@ export const ChatApiExtensions = async (props: {
           }
 
           const withoutEmbedding = FormatCitations(searchResult.response);
-          const citationResponse = await CreateCitations(withoutEmbedding);
+          const citationResponse = await CreateCitations(withoutEmbedding,undefined,"non_sf");
 
           return searchResult.response
             .map((r, i) => {
@@ -687,7 +688,8 @@ async function runSfDirect(props: {
 
   const openAI = OpenAIInstance();
 
-  const base =
+  const personal = await isPersonalSalesforceUser();
+  const base = personal ? personalSalesforceBase() :
     process.env.SF_GATEWAY_BASE_URL?.replace(/\/+$/, "") ||
     "http://127.0.0.1:8001";
 
@@ -720,27 +722,41 @@ async function runSfDirect(props: {
 
   let sfJson: any = null;
   let sfError: string | null = null;
+  let personalSnapshot: { orgId: string; userId: string; retrievedAt: string; proof?: string } | undefined;
+  const finish = (runner: ChatCompletionStreamingRunner) => {
+    if (personalSnapshot) Object.defineProperty(runner, "salesforceSnapshot", { value: personalSnapshot });
+    return runner;
+  };
 
   try {
+    const personalHeaders = await salesforcePersonalHeaders(url, loginEmail ?? "", threadId ?? "");
     const res = await fetch(url.toString(), {
       signal,
+      cache: "no-store",
+      redirect: "error",
       headers: {
+        ...personalHeaders,
         ...(loginEmail ? { "X-User-Email": loginEmail } : {}),
         ...(threadId ? { "X-Chat-Thread-Id": threadId } : {}),
       },
     });
+    if (personal) {
+      assertPersonalSalesforceResponse(res, personalHeaders);
+      personalSnapshot = { orgId: res.headers.get("X-SF-Org-Id")!, userId: res.headers.get("X-SF-User-Id")!, retrievedAt: new Date().toISOString() };
+    }
 
     if(res.status===422) {
       const issue=await res.json();
-      const knownIssue=salesforceReadText(issue);
-      if(knownIssue)return salesforceClarificationStream(knownIssue,signal);
+      if (!issue.account_candidates?.length && !issue.field_candidates?.length && !issue.candidates?.length) personalSnapshot = undefined;
+      const knownIssue=salesforceReadText(issue,personal);
+      if(knownIssue)return finish(salesforceClarificationStream(knownIssue,signal));
       if(issue.needs_clarification&&typeof issue.clarification==="string") {
-        return salesforceClarificationStream(issue.clarification,signal);
+        return finish(salesforceClarificationStream(issue.clarification,signal));
       }
       sfError="Salesforce request needs clarification";
     } else if (!res.ok) {
       const issue = await res.json().catch(()=>null);
-      const knownError = salesforceReadText(issue);
+      const knownError = salesforceReadText(issue,personal);
       if (knownError) return salesforceTextStream(knownError, signal);
       if(issue?.error==="semantic_plan_unavailable")return salesforceTextStream("一時的に依頼文を解析できません。少し待って再度お試しください。",signal);
       if(issue?.error==="owner_scope_unavailable")return salesforceTextStream("部下の担当範囲、または検索の基準となる本人を確認できませんでした。本人の担当分で代用せず、検索を中止しました。",signal);
@@ -754,6 +770,7 @@ async function runSfDirect(props: {
       });
     }
   } catch (e: any) {
+    if (personal) return salesforceTextStream("Salesforce本人接続を確認できなかったため検索を中止しました。共通アカウントでは代用しません。管理者に本人接続の設定を確認してください。", signal);
     sfError = "Salesforce gateway request failed: " + String(e);
     console.error("[SF] Gateway request failed", {
       error: e instanceof Error ? e.name : "unknown",
@@ -761,21 +778,27 @@ async function runSfDirect(props: {
   }
 
   let jsonSnippet = "";
-  const authoritativeText = salesforceReadText(sfJson);
-  if (authoritativeText) return salesforceTextStream(authoritativeText, signal);
+  if (sfJson?.status === "conversation" || sfJson?.ok === false || sfJson?.error) personalSnapshot = undefined;
+  if (personalSnapshot && typeof sfJson?.snapshot_proof === "string") personalSnapshot.proof = sfJson.snapshot_proof;
+  if (sfJson && typeof sfJson === "object") {
+    const { snapshot_proof: _serverProof, ...displayData } = sfJson;
+    sfJson = displayData;
+  }
+  const authoritativeText = salesforceReadText(sfJson,personal);
+  if (authoritativeText) return finish(salesforceTextStream(authoritativeText, signal));
   if (sfJson?.ok === false || sfJson?.error) return runSalesforceGatewayFailure({openAI,model,signal});
   if (sfJson?.status === "needs_account_selection") {
     const candidates = validAccountCandidates(sfJson.account_candidates);
     if (!candidates.length) return salesforceTextStream("候補を表示できませんでした。会社名に支店名・部署名を加えて再検索してください。", signal);
-    const saved = await CreateChatMessage({name:"Salesforce",role:"tool",chatThreadId:threadId,
+    const saved = await CreateChatMessage({name:"Salesforce",role:"tool",chatThreadId:threadId,salesforceSnapshot:personalSnapshot,
       content:JSON.stringify({integration:"sf_account_selection",observedAt:new Date().toISOString(),
         originalRequest:props.accountChoice?.originalRequest ?? userMessage,candidates})});
     if (saved.status !== "OK") return salesforceTextStream("候補の保存に失敗しました。元の依頼を再送してください。",signal);
-    return salesforceTextStream(accountSelectionText(candidates,Boolean(sfJson.candidates_truncated)),signal);
+    return finish(salesforceTextStream(accountSelectionText(candidates,Boolean(sfJson.candidates_truncated)),signal));
   }
-  if (sfJson?.zero_reason && typeof sfJson.zero_reason_message === "string") return salesforceTextStream(sfJson.zero_reason_message,signal);
+  if (sfJson?.zero_reason && typeof sfJson.zero_reason_message === "string") return finish(salesforceTextStream(sfJson.zero_reason_message,signal));
   const monthlyReport = sfJson && salesforceMonthlyReport(sfJson, /Canvas|キャンバス/i.test(props.accountChoice?.originalRequest ?? userMessage));
-  if (monthlyReport) return salesforceTextStream(monthlyReport,signal);
+  if (monthlyReport) return finish(salesforceTextStream(monthlyReport,signal));
   if (sfJson) {
     // Keep the interpreted conditions and server-computed summary before detail rows.
     sfJson={...salesforceReadMetadata(sfJson),request_plan:sfJson.request_plan,analysis:sfJson.analysis,...sfJson};
@@ -844,7 +867,7 @@ async function runSfDirect(props: {
       role: "system",
       content: systemBase,
     },
-    ...history,
+    ...(personal ? [] : history),
     {
       role: "user",
       content: userMessage,
@@ -867,14 +890,14 @@ async function runSfDirect(props: {
 
   console.log("[SF] Using model for direct summary:", model);
 
-  return openAI.beta.chat.completions.stream(
+  return finish(openAI.beta.chat.completions.stream(
     {
       model,
       stream: true,
       messages,
     },
     { signal }
-  );
+  ));
 }
 
 function runSalesforceGatewayFailure(props: {

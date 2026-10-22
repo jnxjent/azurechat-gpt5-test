@@ -49,7 +49,18 @@ async function main(){
  }
  assert.deepEqual(chatStore.messages.map(m=>m.role),replies.flatMap(()=>['user','assistant']));
  assert.deepEqual(persisted.map(m=>m.content),replies);
+ const snapshot={orgId:'00D000000000001AAA',userId:'005000000000001AAA',retrievedAt:'2026-10-21T03:00:00.000Z'};
+ global.fetch=async()=>{
+  const runner=salesforceTextStream('本人権限の検索結果です。',new AbortController().signal);
+  Object.defineProperty(runner,'salesforceSnapshot',{value:snapshot});
+  return new Response(OpenAIStream({runner,chatThread:{id:'collision-test'}}));
+ };
+ await chatStore.submitText('本人接続の結果を保存');
+ const last=chatStore.messages.filter(m=>m.role==='assistant').at(-1);
+ assert.ok(last.content.includes(snapshot.retrievedAt)&&last.content.includes('非表示'));
+ assert.deepEqual(persisted.at(-1).salesforceSnapshot,snapshot);
  console.log('PASS Salesforce multi-turn replies: real SSE and client store preserve all six answers, including repeated text');
+ console.log('PASS personal snapshot: server source identity and timestamp are persisted and shown in final SSE');
 }
 module.exports=main();
 if(require.main===module)module.exports.catch(error=>{console.error(error.stack);process.exitCode=1;});

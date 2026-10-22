@@ -55,7 +55,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
   const {resolvedTheme}=useTheme();
   const [chartColorMode,setChartColorMode]=useState<"light"|"dark">("light");
   useEffect(()=>{setChartColorMode(resolvedTheme==="dark"?"dark":"light");},[resolvedTheme]);
-  const [doc,setDoc]=useState<CanvasDocument>({threadId,title:"レポート",content:initialContent??"",...canvasImportedMetadata(initialContent??""),chartType:"bar",tableIndex:0,valueColumn:1,version:0});
+  const [doc,setDoc]=useState<CanvasDocument>({threadId,title:"レポート",content:initialContent??"",...(initialContent===undefined?{}:{sourceContent:initialContent}),...canvasImportedMetadata(initialContent??""),chartType:"bar",tableIndex:0,valueColumn:1,version:0});
   const [saved,setSaved]=useState("");
   const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[editing,setEditing]=useState(false);
   const [error,setError]=useState(""),[notice,setNotice]=useState("");
@@ -92,7 +92,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
         if(!response.ok)throw Error(data.error||"読み込めませんでした。");
         if(controller.signal.aborted)return;
         setUndo(initialContent===undefined?(data.history??[]):data.item?[data.item,...(data.history??[])]:[]);setRedo([]);
-        if(data.item){setSaved(JSON.stringify(data.item));setDoc(initialContent===undefined?data.item:{...data.item,title:"レポート",content:initialContent,...canvasImportedMetadata(initialContent),chartType:"bar",tableIndex:0,valueColumn:1,valueColumns:undefined});}
+        if(data.item){setSaved(JSON.stringify(data.item));setDoc(initialContent===undefined?data.item:{...data.item,title:"レポート",content:initialContent,sourceContent:initialContent,...canvasImportedMetadata(initialContent),chartType:"bar",tableIndex:0,valueColumn:1,valueColumns:undefined});}
         else setSaved(JSON.stringify({threadId,title:"レポート",content:"",unit:"",period:"",source:"",chartType:"bar",tableIndex:0,valueColumn:1,version:0}));
       }catch(cause){if(!controller.signal.aborted)setError(cause instanceof Error?cause.message:"読み込めませんでした。");}
       finally{if(!controller.signal.aborted)setLoading(false);}

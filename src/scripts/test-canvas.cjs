@@ -5,6 +5,7 @@ let proposedContent='## 結論\n元データを確認してください。\n## �
 const documents=new Map();
 const stubs={
   'server-only':{},
+  '@/features/common/services/salesforce-personal':{isPersonalSalesforceUser:async()=>false},
   '@/features/ui/dropdown-menu':{},
   'react-markdown':()=>null,
   'remark-gfm':()=>{},

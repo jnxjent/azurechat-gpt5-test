@@ -10,6 +10,7 @@ export const userSession = async (): Promise<UserModel | null> => {
       name: session.user.name!,
       image: session.user.image!,
       email: session.user.email!,
+      salesforcePrincipal: (session.user as any).salesforcePrincipal,
       isAdmin: session.user.isAdmin!,
       slRole: session.user.slRole,
       slDept: session.user.slDept,
@@ -50,6 +51,7 @@ export const redirectIfAuthenticated = async () => {
 };
 
 export type UserModel = {
+  salesforcePrincipal?: string;
   name: string;
   image: string;
   email: string;

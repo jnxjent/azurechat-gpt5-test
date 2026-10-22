@@ -1,4 +1,5 @@
 export interface CanvasDocument {
+  sourceMessageIds?: string[]; sourceContent?: string;
   threadId: string; title: string; content: string; unit: string; period: string; source: string;
   chartType: "bar" | "line"; tableIndex: number; valueColumn: number; valueColumns?: number[]; version: number;
 }
@@ -129,5 +130,7 @@ export function validateCanvas(value: unknown): CanvasDocument {
       !Number.isInteger(v.tableIndex) || Number(v.tableIndex)<0 || Number(v.tableIndex)>9 ||
       !Number.isInteger(v.valueColumn) || Number(v.valueColumn)<1 || Number(v.valueColumn)>100) throw new TypeError("グラフ設定が正しくありません。");
   if(v.valueColumns!==undefined && (!Array.isArray(v.valueColumns)||v.valueColumns.length<1||v.valueColumns.length>6||v.valueColumns.some(c=>!Number.isInteger(c)||c<1||c>100)||new Set(v.valueColumns).size!==v.valueColumns.length))throw new TypeError("比較する系列は1〜6列を選択してください。");
-  return Object.fromEntries([...Object.keys(limits),"version","chartType","tableIndex","valueColumn",...(v.valueColumns===undefined?[]:["valueColumns"])].map(key=>[key,v[key]])) as unknown as CanvasDocument;
+  if(v.sourceMessageIds!==undefined&&(!Array.isArray(v.sourceMessageIds)||v.sourceMessageIds.length>40||v.sourceMessageIds.some(id=>typeof id!=="string"||!id||id.length>200)))throw new TypeError("Invalid Canvas sources");
+  if(v.sourceContent!==undefined&&(typeof v.sourceContent!=="string"||v.sourceContent.length>60000))throw new TypeError("Invalid Canvas source");
+  return Object.fromEntries([...Object.keys(limits),"version","chartType","tableIndex","valueColumn",...(v.valueColumns===undefined?[]:["valueColumns"]),...(v.sourceMessageIds===undefined?[]:["sourceMessageIds"]),...(v.sourceContent===undefined?[]:["sourceContent"])].map(key=>[key,v[key]])) as unknown as CanvasDocument;
 }

@@ -1,3 +1,4 @@
+import { personalSalesforceForEmail } from "@/features/common/services/salesforce-personal";
 import "server-only";
 import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 
@@ -20,6 +21,7 @@ export async function queryTeamsSalesforce(props: {
   conversationId: string;
   activityId: string;
 }): Promise<string> {
+  if (personalSalesforceForEmail(props.userEmail)) return "本人別Salesforce接続は現在Webで検証中です。Teamsからの検索は停止しています。";
   const requestKey = `${props.conversationId}\n${props.activityId}`;
   const existing = props.activityId ? requestCache.get(requestKey) : undefined;
   if (existing) return existing;
