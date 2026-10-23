@@ -78,7 +78,8 @@ with tempfile.TemporaryDirectory() as directory:
       return mod.exports;
     }
     const teams = loadGuard('features/teams/teams-salesforce-service.ts');
-    assert.match(await teams.queryTeamsSalesforce({ message: 'count', userEmail: user.email, conversationId: 'same', activityId: 'same' }), /停止/);
+    // Teams is enabled, but an unverified actor must still fail closed.
+    assert.match(await teams.queryTeamsSalesforce({ message: 'count', userEmail: user.email, conversationId: 'same', activityId: 'same' }), /本人対応を確認できません/);
     const skills = loadGuard('features/skills/execution/skill-search-tools.ts');
     const tool = skills.createSkillSearchTools({ email: user.email, threadId: 'same', userMessage: 'count', signal: new AbortController().signal });
     assert.equal((await tool.execute('salesforce', 'count')).reason, 'personal_route_not_enabled');
