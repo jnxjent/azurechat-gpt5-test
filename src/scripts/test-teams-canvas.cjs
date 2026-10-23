@@ -132,6 +132,20 @@ async function main(){
  card=teams.teamsAccountSelectionCard(actor(users[0]),activity(users[0]).conversation.id,'SalesforceのJ＆Tの月別商談金額',candidates);
  result=await handle(users[0],{value:{...action(card,'chooseAccount'),accountId:candidates[0].id}});assert.ok(result.text.includes('83,000'));assert.equal(records.size,countBefore,'normal search does not create a Canvas');
  const notifications=load('features/teams/teams-canvas-notifications.ts');
+ // Attachment-only messages can register before their early return, without opening Canvas.
+ for(const [id,record] of records)if(record.type==='CANVAS_TEAMS_ROUTE'&&record.principal===users[1].salesforcePrincipal)records.delete(id);
+ await teams.registerTeamsCanvasNotificationConversation(activity(users[1],{text:'',attachments:[{contentType:'application/vnd.microsoft.teams.file.download.info'}]}),api);
+ assert.ok(Array.from(records.values()).some(r=>r.type==='CANVAS_TEAMS_ROUTE'&&r.principal===users[1].salesforcePrincipal&&r.conversationId==='personal-reader'));
+ const routeCount=()=>Array.from(records.values()).filter(r=>r.type==='CANVAS_TEAMS_ROUTE').length;
+ const registeredCount=routeCount();
+ await teams.registerTeamsCanvasNotificationConversation(activity(users[2],{conversation:{id:'group',conversationType:'groupChat',tenantId:tenant}}),api);
+ process.env.TEAMS_SKIP_AUTH='true';
+ await teams.registerTeamsCanvasNotificationConversation(activity(users[2],{text:'hello'}),api);
+ process.env.TEAMS_SKIP_AUTH='false';
+ rosterOverride={email:users[2].email,aadObjectId:users[0].salesforcePrincipal.split(':')[1],tenantId:tenant};
+ await teams.registerTeamsCanvasNotificationConversation(activity(users[2],{text:'hello'}),api);
+ rosterOverride=null;
+ assert.equal(routeCount(),registeredCount,'unverified and group chat must not register routes');
  report=await under(users[0],()=>share.getSharedCanvas(created.id));
  await under(users[0],()=>share.changeSharedCanvas(created.id,{action:'access',revision:report.revision,enabled:true,readers:[users[1].email,users[2].email],permissions:{[users[1].email]:'edit',[users[2].email]:'view'}}));
  let receipt=await under(users[0],()=>notifications.notifyTeamsCanvasShare(created.id,'Meet tomorrow'));

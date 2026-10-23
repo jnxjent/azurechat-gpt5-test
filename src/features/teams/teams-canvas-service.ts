@@ -58,6 +58,17 @@ export function teamsCanvasLink(text:unknown):string|null {
 }
 export function isTeamsCanvasRequest(activity:CanvasTeamsActivity) {return isTeamsCanvasSubmission(activity.value)||Boolean(teamsCanvasLink(activity.text))||activity.text==="共有レポート";}
 
+/** Best-effort registration for ordinary SDK-authenticated personal chat messages. */
+export async function registerTeamsCanvasNotificationConversation(activity:CanvasTeamsActivity,api:CanvasTeamsApi):Promise<void> {
+  if(process.env.SF_PERSONAL_MODE!=="true"||activity.conversation?.conversationType!=="personal")return;
+  try {
+    await resolveTeamsCanvasActor(activity,api);
+  }catch {
+    // General chat does not require Salesforce enrollment. Never log identity data.
+    console.info("[teams-canvas] Conversation notification registration skipped");
+  }
+}
+
 /** SDK-authenticated activity + authoritative conversation roster, never email/AAD IDs from card data. */
 export async function resolveTeamsCanvasActor(activity:CanvasTeamsActivity,api:CanvasTeamsApi):Promise<CanvasActor> {
   if(process.env.TEAMS_SKIP_AUTH?.trim().toLowerCase()==="true")throw new TeamsCanvasError("認証を省略した環境では共有レポートを操作できません。");

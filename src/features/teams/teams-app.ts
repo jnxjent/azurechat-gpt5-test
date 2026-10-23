@@ -30,7 +30,7 @@ import {
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
 import { resolveSalesforceRoute } from "@/features/common/services/salesforce-routing";
 import { handleTeamsDeskNets } from "./teams-desknets-service";
-import { handleTeamsCanvas,createTeamsPersonalCanvas,resolveTeamsCanvasActor,teamsAccountSelectionCard,isTeamsCanvasRequest,isTeamsCanvasSubmission,type CanvasTeamsActivity,type CanvasTeamsApi } from "./teams-canvas-service";
+import { handleTeamsCanvas,createTeamsPersonalCanvas,resolveTeamsCanvasActor,registerTeamsCanvasNotificationConversation,teamsAccountSelectionCard,isTeamsCanvasRequest,isTeamsCanvasSubmission,type CanvasTeamsActivity,type CanvasTeamsApi } from "./teams-canvas-service";
 import {personalSalesforceForEmail} from "@/features/common/services/salesforce-personal";
 import {openTeamsCanvasDialog} from "./teams-canvas-service";
 import {
@@ -180,6 +180,8 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
 
       const teamsUserId = activity.from?.id;
       if (!text && uploadedFiles.length > 0) {
+        // This early return bypasses the verified actor lookup used by text questions.
+        await registerTeamsCanvasNotificationConversation(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
         if (teamsUserId) {
           await recordTeamsThreadUsage({ conversationId, teamsUserId });
           await recordCompletedTeamsTurn({
@@ -197,9 +199,7 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         // Send first so a greeting is not delayed by Graph, Cosmos DB,
         // Azure AI Search, or Azure OpenAI.
         await send(instantReply);
-        if(process.env.SF_PERSONAL_MODE==="true"&&activity.conversation?.conversationType==="personal") {
-          try {await resolveTeamsCanvasActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);}catch { /* General greetings do not require Salesforce enrollment. */ }
-        }
+        await registerTeamsCanvasNotificationConversation(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
         if (teamsUserId) {
           await recordTeamsThreadUsage({ conversationId, teamsUserId });
           await recordCompletedTeamsTurn({
