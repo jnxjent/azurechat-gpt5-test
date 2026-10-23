@@ -202,7 +202,8 @@ export async function canvasNotificationTargets(id:string,expectedRevision?:numb
   if(latest._etag!==record._etag)throw new CanvasShareError(409,"共有設定が変更されています。");
   const available=expectedRevision===undefined?await availableReaders(user):record.readers;
   const readers=record.readers.filter(reader=>available.some(candidate=>sameUser(reader,candidate)));
-  return {revision:record.revision,owner:user,readers,unavailable:record.readers.length-readers.length};
+  const unavailableReaders=record.readers.filter(reader=>!readers.some(candidate=>sameUser(reader,candidate)));
+  return {revision:record.revision,owner:user,readers,unavailable:unavailableReaders.length,unavailableReaders};
 }
 
 /** Comments share the report's signed document and ETag: revocation and writes race safely. */

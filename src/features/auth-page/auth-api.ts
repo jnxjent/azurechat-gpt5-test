@@ -21,6 +21,8 @@ const AAD_SCOPE = [
   "offline_access",
   "User.Read",
   "Files.ReadWrite",
+  ...(process.env.CANVAS_TEAMS_PERSONAL_NOTIFICATIONS_ENABLED === "true"
+    ? ["Chat.Create", "ChatMessage.Send"] : []),
   ...(process.env.DESKNETS_WEB_MEETING_ENABLED === "true" ? WEB_MEETING_SCOPE : []),
 ].join(" ");
 
@@ -156,6 +158,7 @@ async function refreshAzureADAccessToken(token: any) {
       accessToken: data.access_token ?? token.accessToken,
       accessTokenExpiresAt: nowSec + expiresIn,
       refreshToken: data.refresh_token ?? token.refreshToken,
+      graphScopes: data.scope ?? token.graphScopes,
       refreshError: undefined,
     };
   } catch (e) {
@@ -190,6 +193,8 @@ export const options: NextAuthOptions = {
 
       const p: any = profile ?? {};
       if (account) {
+        (token as any).graphProvider = account.provider;
+        (token as any).graphScopes = account.provider === "azure-ad" ? account.scope ?? "" : "";
         (token as any).salesforcePrincipal = salesforcePrincipalFromProfile(account.provider, p, process.env.AZURE_AD_TENANT_ID);
       }
       const profileEmail = p.email || p.preferred_username || p.upn || null;
@@ -230,8 +235,10 @@ export const options: NextAuthOptions = {
       // アクセストークンはセッションへ載せない。NextAuthのセッションは
       // /api/auth/session や useSession() からブラウザーへ渡るため、載せると公開される。
       // サーバー側で必要な箇所は next-auth/jwt の getToken でJWTから直接読む。
+      (session as any).graphProvider = (token as any).graphProvider;
+      (session as any).graphScopes = (token as any).graphScopes;
       (session as any).accessTokenExpiresAt = (token as any).accessTokenExpiresAt;
-      (session as any).refreshError = (token as any).refreshError;
+      (session as any).refreshError = (token as any).refreshError ? "RefreshAccessTokenError" : undefined;
       return session;
     },
   },

@@ -48,6 +48,7 @@ jobs:
           node scripts/test-canvas-report-layout.cjs
           node scripts/test-canvas-share-directory.cjs
           node scripts/test-teams-canvas.cjs
+          node scripts/test-canvas-personal-notifications.cjs
           node scripts/test-canvas-comment-submit.cjs
           node scripts/test-salesforce-history-access.cjs
           SF_PERSONAL_AUTH_METHOD=oauth node scripts/test-salesforce-history-access.cjs

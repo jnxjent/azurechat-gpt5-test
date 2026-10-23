@@ -116,7 +116,7 @@ export function SharedCanvasView({ id,embedded=false }: { id: string;embedded?:b
     </nav>}
     <button type="button" className="underline" onClick={() => { void load(true); }}>表示を再確認</button>
     {report?.document&&!report.restricted&&<a className="ml-4 underline" href="#comments">コメント（{(report.comments??[]).filter(c=>!c.deleted).length}件）へ移動</a>}
-    {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
+    {error && <p role="alert">{error}</p>}{notice && <p role="status" className="whitespace-pre-line">{notice}</p>}
     {operationError && <p role="alert">{operationError}</p>}
     {!report && !error && <p role="status">閲覧権限を確認しています…</p>}
     {report && <p>最終更新：{new Date(report.updatedAt).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}（日本時間）／版：{report.revision}</p>}
@@ -124,13 +124,13 @@ export function SharedCanvasView({ id,embedded=false }: { id: string;embedded?:b
     {report?.owner && <details ref={sharingSection} className="rounded border p-4"><summary className="cursor-pointer font-semibold">共有と更新</summary><section className="mt-3 space-y-3">
       <CanvasPeoplePicker selected={readers??report.readers??[]} onChange={selectReaders} permissions={permissions??report.permissions??{}} onPermissionsChange={setPermissions} disabled={busy}/>
       <label className="block text-sm">共有メッセージ（任意）<textarea className="mt-1 block w-full rounded border bg-background p-2" disabled={busy||!notifyTeams} maxLength={4000} value={sharingMessage} onChange={e=>setSharingMessage(e.target.value)}/><span className="text-xs">Teams通知でリンクと一緒に送信します。コメント欄には投稿しません。通知をオフにすると送信しません。</span></label>
-      <label className="flex gap-2"><input type="checkbox" disabled={busy} checked={notifyTeams} onChange={e=>setNotifyTeams(e.target.checked)}/><span>選択した相手に共有を通知する<small className="block">保存すると、相手とこのBOTのTeamsチャットへリンクを送ります。相手がこのBOTへ一度メッセージを送っている必要があります。送信結果は保存後に下へ表示します。</small></span></label>
+      <label className="flex gap-2"><input type="checkbox" disabled={busy} checked={notifyTeams} onChange={e=>setNotifyTeams(e.target.checked)}/><span>選択した相手に共有を通知する<small className="block">{embedded?"保存すると、相手とこのBOTのTeamsチャットへリンクを送ります。相手がこのBOTへ一度メッセージを送っている必要があります。":"あなたから相手へのTeams個人チャットに、共有リンクとメッセージを送ります。相手のBOT利用は不要です。権限がない場合は共有URLをコピーして送ってください。"}送信結果は保存後に下へ表示します。</small></span></label>
       <div className="flex flex-wrap gap-4">
         <button disabled={busy||Boolean(enabled??report.enabled)&&!(readers??report.readers??[]).length} type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => { void change("access"); }}>{busy?"処理中…":"共有設定を保存"}</button>
         <button disabled={busy} type="button" className="rounded border px-3 py-2" onClick={() => { void change("refresh"); }}>{report.savedCanvas?"保存済みCanvasを反映":"SFから内容を更新"}</button>
         <button type="button" className="rounded border px-3 py-2" onClick={() => { void navigator.clipboard.writeText(`${window.location.origin}/canvas/shared/${encodeURIComponent(id)}`).then(() => setNotice("共有URLをコピーしました。Teamsに貼り付けられます。")).catch(() => setError("共有URLをコピーできませんでした。")); }}>共有URLをコピー</button>
       </div>
-      {notice&&<p className="rounded border bg-muted p-3">{notice}</p>}{operationError&&<p className="rounded border p-3 text-red-500">{operationError}</p>}
+      {notice&&<p className="whitespace-pre-line rounded border bg-muted p-3">{notice}</p>}{operationError&&<p className="rounded border p-3 text-red-500">{operationError}</p>}
       <p className="text-sm">共有を解除するには共有先を外して保存してください。閲覧者の次回アクセス・再確認時に表示を停止します。{report.savedCanvas?"内容の更新では、元のチャットで保存したCanvasを同じURLへ反映します。":"更新は同じ依頼で再検索します。"}</p>
       {report.query && <p className="text-sm">取得依頼：{report.query}</p>}
     </section></details>}
