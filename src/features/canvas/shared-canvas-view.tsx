@@ -4,16 +4,19 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CanvasChart } from "./canvas-panel";
 import { canvasTables, type CanvasDocument } from "./canvas-rules";
-import { CanvasPeoplePicker } from "./canvas-share-dialog";
+import { CanvasPeoplePicker,canvasNotificationNotice } from "./canvas-share-dialog";
 import { canvasReportLayout } from "./canvas-report-layout";
 import { CanvasComments,type SharedComment,type CommentChange } from "./canvas-comments";
-type Report = { revision: number; updatedAt: string; owner: boolean; readers?: string[];permissions?:Record<string,"view"|"comment">; enabled?: boolean; savedCanvas?:boolean; restricted: boolean; document?: CanvasDocument; query?: string;comments?:SharedComment[];canComment?:boolean };
+import {SharedCanvasEditor,type SharedCanvasEdits} from "./shared-canvas-editor";
+type Report = { revision: number; updatedAt: string; owner: boolean; readers?: string[];permissions?:Record<string,"view"|"comment"|"edit">; enabled?: boolean; savedCanvas?:boolean; restricted: boolean; document?: CanvasDocument; query?: string;comments?:SharedComment[];canComment?:boolean;canEdit?:boolean };
 export function SharedCanvasView({ id }: { id: string }) {
   const [report, setReport] = useState<Report | null>(null), [error, setError] = useState("");
   const [notice, setNotice] = useState(""), [busy, setBusy] = useState(false);
   const [operationError, setOperationError] = useState("");
   const [readers, setReaders] = useState<string[] | null>(null), [enabled, setEnabled] = useState<boolean | null>(null);
-  const [permissions,setPermissions]=useState<Record<string,"view"|"comment">|null>(null);
+  const [permissions,setPermissions]=useState<Record<string,"view"|"comment"|"edit">|null>(null);
+  const [editing,setEditing]=useState(false),[sharingMessage,setSharingMessage]=useState("");
+  const [notifyTeams,setNotifyTeams]=useState(true);
   const generation = useRef(0), active = useRef<AbortController | null>(null);
   const endpoint = `/api/canvas/shared/${encodeURIComponent(id)}`;
   const load = useCallback(async (force = false) => {
@@ -46,10 +49,10 @@ export function SharedCanvasView({ id }: { id: string }) {
     generation.current++; active.current?.abort(); active.current = null;
     try {
       const selected=readers??report.readers??[];
-      const response = await fetch(endpoint, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: report.revision, action, ...(action === "access" ? { readers:selected,permissions:Object.fromEntries(selected.map(email=>[email,(permissions??report.permissions)?.[email]??"view"])), enabled: enabled ?? report.enabled ?? false } : {}) }) });
+      const response = await fetch(endpoint, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: report.revision, action, ...(action === "access" ? { readers:selected,permissions:Object.fromEntries(selected.map(email=>[email,(permissions??report.permissions)?.[email]??"view"])), enabled: enabled ?? report.enabled ?? false,message:(enabled??report.enabled)?sharingMessage:undefined,notifyTeams } : {}) }) });
       const data = await response.json();
       if (!response.ok) throw Error(data.error || "更新できませんでした。");
-      setReaders(null); setEnabled(null);setPermissions(null); setNotice(action === "access" ? "共有設定を更新しました。" : "最新データを取得しました。同じURLで表示できます。");
+      setReaders(null); setEnabled(null);setPermissions(null);setSharingMessage(""); setNotice((action === "access" ? "共有設定を更新しました。" : "最新データを取得しました。同じURLで表示できます。")+canvasNotificationNotice(data.notifications));
     } catch (e) { setOperationError(e instanceof Error ? e.message : "更新できませんでした。"); }
     finally { setBusy(false); void load(true); }
   }
@@ -57,18 +60,48 @@ export function SharedCanvasView({ id }: { id: string }) {
     if(!report||busy)return false;
     setBusy(true);setOperationError("");setNotice("");generation.current++;active.current?.abort();active.current=null;
     try {
-      const response=await fetch(`${endpoint}/comments`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...input,revision:report.revision}),cache:"no-store"});
+      const post=(revision:number)=>fetch(`${endpoint}/comments`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...input,revision}),cache:"no-store"});
+      let response=await post(report.revision);
+      if(response.status===409&&input.action==="create") {
+        const refreshed=await fetch(endpoint,{cache:"no-store"}),latest=await refreshed.json();
+        if(refreshed.ok&&!latest.restricted&&latest.canComment&&latest.document?.version===report.document?.version) {
+          setReport(latest);response=await post(latest.revision);
+        }else if(latest.restricted||!refreshed.ok&&[401,403,404].includes(refreshed.status)) {
+          setReport(refreshed.ok?latest:null);throw Error(latest.error||"現在の参照権限を確認できません。");
+        }
+      }
       const data=await response.json();if(!response.ok)throw Error(data.error||"コメントを保存できませんでした。");
-      setNotice(input.action==="delete"?"コメントを削除しました。":"コメントを保存しました。");return true;
+      // Use the committed result immediately; a subsequent refresh failure must
+      // not clear a draft as if nothing was saved, or hide a successful post.
+      setReport(previous=>{
+        if(!previous)return previous;
+        const comments=previous.comments??[];
+        return {...previous,revision:data.revision,updatedAt:data.updatedAt,comments:comments.some(c=>c.id===data.comment.id)?comments.map(c=>c.id===data.comment.id?data.comment:c):[...comments,data.comment]};
+      });
+      setNotice(input.action==="delete"?"コメントを削除しました。":"コメントを投稿しました。");return true;
     }catch(error){setOperationError(error instanceof Error?error.message:"コメントを保存できませんでした。");return false;}
-    finally{setBusy(false);void load(true);}
+    finally{setBusy(false);}
+  }
+  async function saveEdit(document:SharedCanvasEdits):Promise<boolean> {
+    if(!report||busy)return false;
+    setBusy(true);setOperationError("");generation.current++;active.current?.abort();active.current=null;
+    try {
+      const response=await fetch(endpoint,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:report.revision,action:"edit",document}),cache:"no-store"});
+      const data=await response.json();if(!response.ok)throw Error(data.error||"変更を保存できませんでした。");
+      setNotice("変更を保存しました。同じURLへ反映しました。");await load(true);return true;
+    }catch(error){setOperationError(error instanceof Error?error.message:"変更を保存できませんでした。");return false;}
+    finally{setBusy(false);}
   }
   const doc = report?.document, table = doc ? canvasTables(doc.content)[doc.tableIndex] : undefined;
+  useEffect(()=>{
+    if(doc&&window.location.hash==="#comments")document.getElementById("comments")?.scrollIntoView({block:"start"});
+  },[Boolean(doc)]);
   const layout=doc?canvasReportLayout(doc):undefined;
   return <main className="mx-auto max-w-6xl p-6 space-y-5">
     <h1 className="text-2xl font-semibold">{layout?.title ?? "共有Canvas"}</h1>
     <p>指定された共有先だけが閲覧できます。表示時にSalesforceの現在の参照権限を確認します。</p>
     <button type="button" className="underline" onClick={() => { void load(true); }}>表示を再確認</button>
+    {report?.document&&!report.restricted&&<a className="ml-4 underline" href="#comments">コメント（{(report.comments??[]).filter(c=>!c.deleted).length}件）へ移動</a>}
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     {operationError && <p role="alert">{operationError}</p>}
     {!report && !error && <p role="status">閲覧権限を確認しています…</p>}
@@ -76,7 +109,9 @@ export function SharedCanvasView({ id }: { id: string }) {
     {report?.restricted && <p role="alert">現在のSalesforce権限を確認できないため、本文は表示していません。共有解除は下の設定から行えます。</p>}
     {report?.owner && <details className="rounded border p-4"><summary className="cursor-pointer font-semibold">共有と更新</summary><section className="mt-3 space-y-3">
       <CanvasPeoplePicker selected={readers??report.readers??[]} onChange={setReaders} permissions={permissions??report.permissions??{}} onPermissionsChange={setPermissions} disabled={busy}/>
+      <label className="block text-sm">共有メッセージ（任意）<textarea className="mt-1 block w-full rounded border bg-background p-2" disabled={busy} maxLength={4000} value={sharingMessage} onChange={e=>setSharingMessage(e.target.value)}/><span className="text-xs">共有設定の保存と同時にコメント欄へ投稿します。</span></label>
       <label className="flex gap-2"><input type="checkbox" checked={enabled ?? report.enabled ?? false} onChange={e => setEnabled(e.target.checked)} />指定した相手への共有を有効にする</label>
+      <label className="flex gap-2"><input type="checkbox" disabled={busy} checked={notifyTeams} onChange={e=>setNotifyTeams(e.target.checked)}/>Teamsで共有先に通知する</label>
       <div className="flex flex-wrap gap-4">
         <button disabled={busy} type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => { void change("access"); }}>共有設定を保存</button>
         <button disabled={busy} type="button" className="rounded border px-3 py-2" onClick={() => { void change("refresh"); }}>{report.savedCanvas?"保存済みCanvasを反映":"SFから内容を更新"}</button>
@@ -85,6 +120,8 @@ export function SharedCanvasView({ id }: { id: string }) {
       <p className="text-sm">共有を無効にすると、閲覧者の次回アクセス・再確認時に表示を停止します。{report.savedCanvas?"内容の更新では、元のチャットで保存したCanvasを同じURLへ反映します。":"更新は同じ依頼で再検索します。"}</p>
       {report.query && <p className="text-sm">取得依頼：{report.query}</p>}
     </section></details>}
+    {doc&&report&&!report.restricted&&"canEdit" in report&&report.canEdit&&!editing&&<button className="rounded border px-3 py-2" type="button" disabled={busy} onClick={()=>setEditing(true)}>レポートを編集</button>}
+    {doc&&editing&&report&&!report.restricted&&"canEdit" in report&&report.canEdit&&<SharedCanvasEditor document={doc} busy={busy} onSave={saveEdit} onCancel={()=>setEditing(false)}/>}
     {doc && <article className="prose max-w-none dark:prose-invert">
       <p>出典：{doc.source}{doc.period ? ` ／ 対象期間：${doc.period}` : ""}</p>
       {table && doc.unit && doc.period && <CanvasChart table={table} column={doc.valueColumn} columns={doc.valueColumns} type={doc.chartType} unit={doc.unit} />}

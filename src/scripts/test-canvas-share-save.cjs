@@ -4,7 +4,7 @@ const source=fs.readFileSync(path.join(__dirname,'../features/canvas/canvas-shar
 const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,jsx:ts.JsxEmit.ReactJSX}}).outputText;
 async function scenario({dirty=true,enabled=true,fail=false}={}) {
   let index=0,saves=0;const calls=[],errors=[];
-  const values=[{id:'share',revision:2,readers:['reader@example.com'],enabled:true},['reader@example.com'],enabled,false,false,'',''];
+  const values=[{id:'share',revision:2,readers:['reader@example.com'],enabled:true},['reader@example.com'],enabled,false,false,'','',{},'Please review',true];
   const react={useEffect(){},useState(){const i=index++;return [values[i],value=>{if(i===5)errors.push(value);}];}};
   const module={exports:{}};
   const request=async(url,options)=>{calls.push(JSON.parse(options.body));return {ok:true,json:async()=>({...values[0],enabled})};};
@@ -15,6 +15,6 @@ async function scenario({dirty=true,enabled=true,fail=false}={}) {
   button.props.onClick();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(saves,dirty&&enabled?1:0);
   if(fail){assert.equal(calls.length,0);assert.ok(errors.includes('save failed'));}
-  else {assert.equal(calls.length,1);assert.equal(calls[0].version,dirty&&enabled?4:3);assert.equal(calls[0].enabled,enabled);}
+  else {assert.equal(calls.length,1);assert.equal(calls[0].version,dirty&&enabled?4:3);assert.equal(calls[0].enabled,enabled);assert.equal(calls[0].message,enabled?'Please review':undefined);assert.equal(calls[0].notifyTeams,enabled);}
 }
 (async()=>{await scenario();await scenario({fail:true});await scenario({dirty:false});await scenario({enabled:false});console.log('PASS Canvas sharing: save before publish, returned version, save failure blocks publish, clean canvas, revoke without saving');})().catch(error=>{console.error(error);process.exitCode=1;});

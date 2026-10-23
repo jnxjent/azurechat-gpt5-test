@@ -2,7 +2,10 @@
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/features/ui/dialog";
 type Person={email:string;name:string;department?:string};
-export function CanvasPeoplePicker({selected,onChange,disabled=false,permissions={},onPermissionsChange}:{selected:string[];onChange:(value:string[])=>void;disabled?:boolean;permissions?:Record<string,"view"|"comment">;onPermissionsChange?:(value:Record<string,"view"|"comment">)=>void}) {
+export function canvasNotificationNotice(value?:{sent:number;unavailable:number;failed:number;error?:string}) {
+  return value?` Teams通知：送信${value.sent}件・BOT未登録等${value.unavailable}件・失敗${value.failed}件。${value.error??""}`:"";
+}
+export function CanvasPeoplePicker({selected,onChange,disabled=false,permissions={},onPermissionsChange}:{selected:string[];onChange:(value:string[])=>void;disabled?:boolean;permissions?:Record<string,"view"|"comment"|"edit">;onPermissionsChange?:(value:Record<string,"view"|"comment"|"edit">)=>void}) {
   const [known,setKnown]=useState<Record<string,Person>>({});
   const [query,setQuery]=useState(""),[items,setItems]=useState<Person[]>([]),[loading,setLoading]=useState(false),[error,setError]=useState(""),[more,setMore]=useState(false);
   useEffect(()=>{
@@ -23,13 +26,15 @@ export function CanvasPeoplePicker({selected,onChange,disabled=false,permissions
       {loading?<p role="status">検索中…</p>:error?<p role="alert">{error}</p>:items.length?<ul>{items.map(person=><li key={person.email}><label className="flex cursor-pointer items-center gap-3 rounded p-2 hover:bg-muted"><input type="checkbox" disabled={disabled||(!selected.includes(person.email)&&selected.length>=50)} checked={selected.includes(person.email)} onChange={e=>onChange(e.target.checked?[...selected,person.email]:selected.filter(email=>email!==person.email))}/><span><span className="block">{person.name}</span><span className="block text-xs text-muted-foreground">{person.department||"部署未登録"}</span>{person.name!==person.email&&<span className="block text-xs text-muted-foreground">{person.email}</span>}</span></label></li>)}</ul>:<p>候補が見つかりません。</p>}
     </div>
     {more&&<p className="text-xs">候補が多いため、名前・メールアドレスで絞り込んでください。</p>}
-    <div aria-label="選択した共有先" className="space-y-1"><p className="text-sm">選択済み：{selected.length}人</p>{selected.map(email=><div key={email} className="flex flex-wrap items-center justify-between gap-2 rounded bg-muted px-2 py-1 text-sm"><span className="break-all">{known[email]?.name??email}{known[email]&&<small className="block">{known[email].department||"部署未登録"} ／ {email}</small>}</span>{onPermissionsChange&&<select aria-label={`${email}の共有権限`} className="rounded border bg-background p-1" disabled={disabled} value={permissions[email]??"view"} onChange={e=>onPermissionsChange({...permissions,[email]:e.target.value as "view"|"comment"})}><option value="view">閲覧可</option><option value="comment">コメント可</option></select>}<button type="button" className="shrink-0 underline" disabled={disabled} aria-label={`${email}を共有先から外す`} onClick={()=>onChange(selected.filter(value=>value!==email))}>外す</button></div>)}</div>
+    <div aria-label="選択した共有先" className="space-y-1"><p className="text-sm">選択済み：{selected.length}人</p>{selected.map(email=><div key={email} className="flex flex-wrap items-center justify-between gap-2 rounded bg-muted px-2 py-1 text-sm"><span className="break-all">{known[email]?.name??email}{known[email]&&<small className="block">{known[email].department||"部署未登録"} ／ {email}</small>}</span>{onPermissionsChange&&<select aria-label={`${email}の共有権限`} className="rounded border bg-background p-1" disabled={disabled} value={permissions[email]??"view"} onChange={e=>onPermissionsChange({...permissions,[email]:e.target.value as "view"|"comment"|"edit"})}><option value="view">閲覧可</option><option value="comment">コメント可</option><option value="edit">編集可</option></select>}<button type="button" className="shrink-0 underline" disabled={disabled} aria-label={`${email}を共有先から外す`} onClick={()=>onChange(selected.filter(value=>value!==email))}>外す</button></div>)}</div>
   </div>;
 }
-type Sharing={id:string|null;revision:number|null;readers:string[];permissions?:Record<string,"view"|"comment">;enabled:boolean};
+type Sharing={id:string|null;revision:number|null;readers:string[];permissions?:Record<string,"view"|"comment"|"edit">;enabled:boolean};
 export function CanvasShareDialog({threadId,version,dirty,saveCanvas,onClose,reportTitle}:{threadId:string;version:number;dirty:boolean;saveCanvas:()=>Promise<number>;onClose:()=>void;reportTitle?:string}) {
   const [sharing,setSharing]=useState<Sharing|null>(null),[selected,setSelected]=useState<string[]>([]),[enabled,setEnabled]=useState(true),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
-  const [permissions,setPermissions]=useState<Record<string,"view"|"comment">>({});
+  const [permissions,setPermissions]=useState<Record<string,"view"|"comment"|"edit">>({});
+  const [message,setMessage]=useState("");
+  const [notifyTeams,setNotifyTeams]=useState(true);
   useEffect(()=>{
     const controller=new AbortController();
     void(async()=>{try {
@@ -43,9 +48,9 @@ export function CanvasShareDialog({threadId,version,dirty,saveCanvas,onClose,rep
     if(!sharing||busy)return;setBusy(true);setError("");setNotice("");
     try {
       const savedVersion=enabled&&dirty?await saveCanvas():version;
-      const response=await fetch("/api/canvas/shared/from-thread",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId,version:savedVersion,revision:sharing.revision,readers:selected,permissions:Object.fromEntries(selected.map(email=>[email,permissions?.[email]??"view"])),enabled}),cache:"no-store"});
+      const response=await fetch("/api/canvas/shared/from-thread",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId,version:savedVersion,revision:sharing.revision,readers:selected,permissions:Object.fromEntries(selected.map(email=>[email,permissions?.[email]??"view"])),enabled,message:enabled?message:undefined,notifyTeams:enabled&&notifyTeams}),cache:"no-store"});
       const data=await response.json();if(!response.ok)throw Error(data.error||"共有を保存できませんでした。");
-      setSharing(data);setSelected(data.readers);setPermissions(data.permissions??{});setEnabled(data.enabled);setNotice(data.enabled?"共有しました。同じURLで閲覧できます。":"共有を解除しました。");
+      setSharing(data);setSelected(data.readers);setPermissions(data.permissions??{});setEnabled(data.enabled);setMessage("");setNotice((data.enabled?"共有しました。同じURLで閲覧できます。":"共有を解除しました。")+canvasNotificationNotice(data.notifications));
     }catch(error){setError(error instanceof Error?error.message:"共有を保存できませんでした。");}finally{setBusy(false);}
   }
   const url=sharing?.id?`${window.location.origin}/canvas/shared/${sharing.id}`:"";
@@ -55,6 +60,8 @@ export function CanvasShareDialog({threadId,version,dirty,saveCanvas,onClose,rep
     {loading?<p role="status">共有設定を確認中…</p>:sharing&&<>
       <CanvasPeoplePicker selected={selected} onChange={setSelected} permissions={permissions} onPermissionsChange={setPermissions} disabled={busy}/>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} disabled={busy} onChange={e=>setEnabled(e.target.checked)}/>選択した相手への共有を有効にする</label>
+      {enabled&&<label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={notifyTeams} disabled={busy} onChange={e=>setNotifyTeams(e.target.checked)}/><span>Teamsで共有先に通知する<small className="block">相手がこのBOTへ一度「こんにちは」などを送ると通知できます。未送信は結果に表示します。</small></span></label>}
+      {enabled&&<label className="block text-sm">共有メッセージ（任意）<textarea className="mt-1 block min-h-20 w-full rounded border bg-background p-2" value={message} onChange={e=>setMessage(e.target.value)} disabled={busy} maxLength={4000} placeholder="共有相手へのメッセージを入力"/><span className="text-xs">共有と同時にレポートのコメント欄へ投稿します。</span></label>}
       {dirty&&enabled&&<p className="text-sm">「共有を保存」で、現在のCanvasも保存して共有します。修正依頼が入力されている場合は、その修正も反映します。</p>}
       <button type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy||(enabled&&!selected.length)} onClick={()=>void save()}>{busy?"保存中…":enabled?"共有を保存":"共有を解除"}</button>
       {url&&sharing.enabled&&<div className="space-y-2"><label className="block text-sm">共有URL<input readOnly value={url} className="block w-full rounded border bg-background p-2" onFocus={e=>e.target.select()}/></label><button type="button" className="rounded border px-3 py-1" onClick={()=>{void navigator.clipboard.writeText(url).then(()=>setNotice("共有URLをコピーしました。Teamsなどに貼り付けてください。"),()=>setError("URL欄からコピーしてください。"));}}>共有URLをコピー</button></div>}

@@ -1,14 +1,19 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),crypto=require('node:crypto');
 const tenant='11111111-1111-1111-1111-111111111111';
 const users=['owner','reader','outsider'].map((name,i)=>({name,email:`${name}@example.com`,salesforcePrincipal:`${tenant}:${String(i+2).repeat(8)}-${String(i+2).repeat(4)}-${String(i+2).repeat(4)}-${String(i+2).repeat(4)}-${String(i+2).repeat(12)}`}));
-const records=new Map(),root=path.resolve(__dirname,'..'),cache=new Map();let etag=0,allowed=true,sfCalls=0;
+const records=new Map(),root=path.resolve(__dirname,'..'),cache=new Map();let etag=0,allowed=true,sfCalls=0,queryOverride,lastQuery;
 const container={items:{async create(item){records.set(item.id,{...structuredClone(item),_etag:String(++etag)});}},item(id,partition){assert.equal(partition,'CANVAS_SHARE');return {async read(){if(!records.has(id))throw {code:404};return {resource:structuredClone(records.get(id))};},async replace(item,options){if(records.get(id)?._etag!==options.accessCondition.condition)throw {code:412};records.set(id,{...structuredClone(item),_etag:String(++etag)});}};}};
+container.items.upsert=async item=>{records.set(item.id,{...structuredClone(item),_etag:String(++etag),_rid:'cosmos metadata'});};
+const itemReader=container.item;container.item=(id,partition)=>partition==='CANVAS_TEAMS_ROUTE'?{read:async()=>{if(!records.has(id))throw {code:404};return {resource:structuredClone(records.get(id))};}}:itemReader(id,partition);
 const stubs={'server-only':{},'@/features/auth-page/helpers':{getCurrentUser:async()=>{throw Error('User not found');}},'@/features/common/services/cosmos':{HistoryContainer:()=>container},'@/features/common/services/salesforce-access':{isSalesforceAllowedEmail:email=>users.some(u=>u.email===email)}};
+stubs['@/features/common/services/openai']={OpenAIInstance:()=>({chat:{completions:{create:async()=>({choices:[{message:{content:'本人検索の結果'}}]})}}})};
+const deliveries=[];stubs['./teams-app']={getTeamsRuntime:async()=>({app:{send:async(conversation,message)=>{deliveries.push({conversation,message});}}})};
 function load(relative){const file=path.resolve(root,relative);if(cache.has(file))return cache.get(file);const mod={exports:{}};cache.set(file,mod.exports);const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;new Function('require','module','exports',code)(id=>stubs[id]??(id.startsWith('@/')?load(id.slice(2)+'.ts'):id.startsWith('.')?load(path.resolve(path.dirname(file),id+'.ts')):require(id)),mod,mod.exports);return mod.exports;}
 const actors=load('features/canvas/canvas-actor.ts'),share=load('features/canvas/shared-canvas-service.ts'),teams=load('features/teams/teams-canvas-service.ts');
 global.fetch=async(url,options)=>{
  sfCalls++;const current=await actors.getCanvasActor(),claim=JSON.parse(Buffer.from(options.headers['X-AC-Identity'],'base64url'));assert.equal(claim.principal,current.salesforcePrincipal);assert.equal(claim.email,current.email);assert.equal(url.origin,'https://personal.example.com');
- const data=url.pathname==='/api/sf/query_nl'?{ok:true,snapshot_proof:'proof',items:[{Name:'PRIVATE FINANCIAL DATA'}]}:{ok:true,allowed};
+ if(url.pathname==='/api/sf/query_nl')lastQuery=new URL(url);
+ const data=url.pathname==='/api/sf/query_nl'?(queryOverride?queryOverride(url):{ok:true,snapshot_proof:'proof',items:[{Name:'PRIVATE FINANCIAL DATA'}]}):{ok:true,allowed};
  await new Promise(resolve=>setImmediate(resolve));
  return Response.json(data,{headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':current.salesforcePrincipal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
 };
@@ -31,7 +36,7 @@ async function main(){
  let post=action(result.card,'post');assert.equal(result.card.actions.find(a=>a.data?.operation==='post').type,'Action.Submit');
  result=await handle(users[1],{value:{...post,commentBody:'PRIVATE DISCUSSION',replyTo:'new',email:users[0].email,principal:users[0].salesforcePrincipal}});assert.ok(result.card);assert.ok(!JSON.stringify(result).includes('PRIVATE DISCUSSION'));
  let report=await under(users[0],()=>share.getSharedCanvas(created.id));assert.equal(report.comments.length,1);assert.equal(report.comments[0].authorName,'reader');const comment=report.comments[0];
- const duplicate=await handle(users[1],{value:{...post,commentBody:'PRIVATE DISCUSSION',replyTo:'new'}});assert.ok(duplicate.text.includes('更新'));assert.equal((await under(users[0],()=>share.getSharedCanvas(created.id))).comments.length,1);
+ const duplicate=await handle(users[1],{value:{...post,commentBody:'PRIVATE DISCUSSION',replyTo:'new'}});assert.ok(duplicate.text.includes('投稿しました'));assert.equal((await under(users[0],()=>share.getSharedCanvas(created.id))).comments.length,1);
  const readerCard=result.card;
  result=await handle(users[0],{text:url});const ownerPost=action(result.card,'post');
  result=await handle(users[0],{value:{...ownerPost,replyTo:comment.id,commentBody:'owner reply'}});assert.ok(result.card);
@@ -69,10 +74,81 @@ async function main(){
  await appModule.exports.getTeamsRuntime();let sent=[];
  await routes.get('message')({activity:{...activity(users[1],{text:url}),id:'open-card'},api,send:async value=>sent.push(value)});
  const sdkCard=sent.find(v=>v.attachments)?.attachments[0].content;assert.ok(sdkCard);
- const invoked=await routes.get('card.action')({activity:activity(users[1],{value:{action:{data:{...action(sdkCard,'post'),commentBody:'SDK invoke',replyTo:'new'}}}}),api});
+ const invoked=await routes.get('card.action')({activity:activity(users[1],{value:{action:{data:{...action(sdkCard,'post'),commentBody:'SDK invoke',replyTo:'new'}}}}),api,send:async value=>sent.push(value)});
  assert.equal(invoked.type,'application/vnd.microsoft.card.adaptive');
+ assert.ok(sent.some(v=>typeof v==='string'&&v.includes('投稿しました')),'invoke must emit an explicit bot receipt after saving');
  sent=[];await routes.get('message')({activity:{...activity(users[1],{value:{...action(invoked.value,'post'),commentBody:'SDK submit',replyTo:'new'}}),id:'submit-card'},api,send:async value=>sent.push(value)});
  assert.ok(sent.some(v=>v.attachments));assert.equal(records.get('shared-canvas-'+created.id).comments.length,4);
+ // A real SDK router (not only manually called callbacks) must recognize the
+ // conversation button invoke emitted by Teams clients.
+ const {Router}=require('@microsoft/teams.apps/dist/router/router');
+ const router=new Router();for(const [event,handler] of routes)router.on(event,handler);
+ let card=sent.find(v=>v.attachments).attachments[0].content;
+ const buttonActivity={...activity(users[1],{value:{...action(card,'post'),commentBody:'button invoke',replyTo:'new'}}),type:'invoke',name:'composeExtension/onCardButtonClicked'};
+ assert.equal(router.select(buttonActivity).length,1);
+ sent=[];for(const handler of router.select(buttonActivity))await handler({activity:buttonActivity,api,send:async value=>sent.push(value)});
+ assert.ok(sent.some(v=>typeof v==='string'&&v.includes('投稿しました')));
+ assert.equal(records.get('shared-canvas-'+created.id).comments.length,5);
+ // Retrying the same Teams delivery succeeds without a second write.
+ await routes.get('message.ext.card-button-clicked')({activity:buttonActivity,api,send:async()=>{}});
+ assert.equal(records.get('shared-canvas-'+created.id).comments.length,5);
+ card=sent.find(v=>v.attachments).attachments[0].content;
+ assert.equal(card.actions.find(a=>a.data?.operation==='post').associatedInputs,'auto');
+ for(const envelope of [{feature:'other'},{data:{feature:'other'}},'invalid'])assert.equal(teams.isTeamsCanvasSubmission(envelope),false);
+ assert.equal(teams.isTeamsCanvasSubmission(JSON.stringify(action(card,'post'))),true);
+ // Native Teams sharing and editing use the very same ACL and source checks.
+ result=await handle(users[0],{text:url});result=await handle(users[0],{value:action(result.card,'shareForm')});
+ assert.ok(result.card.body.some(v=>v.id==='readers'&&v.choices.some(c=>c.title.includes('営業部'))));
+ result=await handle(users[0],{value:{...action(result.card,'people'),readers:users[1].email,peopleQuery:'outsider',permission:'edit',sharingMessage:'Keep this draft',notifyTeams:'false',sharingEnabled:'true'}});
+ assert.equal(result.card.body.find(v=>v.id==='readers').value,users[1].email);
+ assert.ok(result.card.body.find(v=>v.id==='readers').choices.some(c=>c.value===users[1].email&&c.title.includes('営業部')));
+ assert.equal(result.card.body.find(v=>v.id==='sharingMessage').value,'Keep this draft');assert.equal(result.card.body.find(v=>v.id==='permission').value,'edit');assert.equal(result.card.body.find(v=>v.id==='notifyTeams').value,'false');
+ result=await handle(users[0],{value:{...action(result.card,'access'),readers:users[1].email,permission:'edit',sharingEnabled:'true',sharingMessage:'Please review this report'}});
+ assert.ok(result.text.includes('共有しました'));
+ report=await under(users[1],()=>share.getSharedCanvas(created.id));assert.equal(report.canEdit,true);assert.equal(report.canComment,true);assert.ok(report.comments.some(c=>c.body==='Please review this report'));
+ result=await handle(users[1],{text:url});result=await handle(users[1],{value:action(result.card,'editForm')});
+ const editAction=action(result.card,'edit');
+ const draft={...editAction,title:'Edited report',content:'Edited in Teams',unit:'円',period:'2026-01-01〜2026-03-31',chartType:'bar',tableIndex:1,valueColumn:2};
+ allowed=false;result=await handle(users[1],{value:draft});assert.ok(!result.card);allowed=true;
+ result=await handle(users[1],{value:draft});assert.ok(result.text.includes('保存しました'));
+ report=await under(users[0],()=>share.getSharedCanvas(created.id));assert.equal(report.document.content,'Edited in Teams');
+ result=await handle(users[1],{value:{...action(result.card,'refresh'),operation:'access',readers:users[2].email,permission:'edit',sharingEnabled:'true'}});assert.ok(result.text.includes('所有者'));
+ // Explicit candidate selection is signed and bound to the requesting user;
+ // monthly Canvas generation retains links, decimal totals and the Account ID.
+ const candidates=[{id:'001000000000001AAA',name:'J＆T 本社',billing_city:'川崎市'},{id:'001000000000002AAA',name:'J＆T 支店',billing_city:'浜松市'}];
+ queryOverride=url=>url.searchParams.has('account_id')?{ok:true,snapshot_proof:'proof',items:[{Name:'January deal',lightning_url:'https://sandbox.example.com/lightning/r/Opportunity/006000000000001AAA/view'}],request_plan:{resolved_account_name:'J＆T 本社',account_id:url.searchParams.get('account_id'),dateRange:{start:'2026-01-01',end:'2026-03-31'},aggregation:{func:'SUM',interval:'month'}},analysis:{complete:true,items:[{period:'2026-01',value:'60000',record_count:1},{period:'2026-03',value:'23000',record_count:1}]}}:{ok:true,status:'needs_account_selection',account_candidates:candidates};
+ const requestActivity={...activity(users[0]),id:'create-canvas'};
+ result=await teams.createTeamsPersonalCanvas(requestActivity,api,'SalesforceのJ＆Tの2026年1月〜3月の商談金額を月別にCanvasで');
+ assert.ok(result.card.body.some(v=>v.id==='accountId'&&v.choices.length===2));
+ const selectedAction=action(result.card,'chooseAccount');
+ let invalid=await handle(users[0],{value:{...selectedAction,accountId:'001000000000003AAA'}});assert.ok(!invalid.card);
+ result=await handle(users[0],{value:{...selectedAction,accountId:candidates[0].id}});assert.ok(result.text.includes('Canvasを作成しました'));
+ const generatedId=action(result.card,'refresh').shareId;
+ report=await under(users[0],()=>share.getSharedCanvas(generatedId));assert.ok(report.document.content.includes('83,000'));assert.ok(report.document.content.includes('[開く]'));assert.equal(report.document.unit,'円');assert.equal(lastQuery.searchParams.get('account_id'),candidates[0].id);
+ await under(users[0],()=>share.changeSharedCanvas(generatedId,{action:'refresh',revision:report.revision}));assert.equal(lastQuery.searchParams.get('account_id'),candidates[0].id,'refresh must retain the selected account');
+ const countBefore=records.size;
+ card=teams.teamsAccountSelectionCard(actor(users[0]),activity(users[0]).conversation.id,'SalesforceのJ＆Tの月別商談金額',candidates);
+ result=await handle(users[0],{value:{...action(card,'chooseAccount'),accountId:candidates[0].id}});assert.ok(result.text.includes('83,000'));assert.equal(records.size,countBefore,'normal search does not create a Canvas');
+ const notifications=load('features/teams/teams-canvas-notifications.ts');
+ report=await under(users[0],()=>share.getSharedCanvas(created.id));
+ await under(users[0],()=>share.changeSharedCanvas(created.id,{action:'access',revision:report.revision,enabled:true,readers:[users[1].email,users[2].email],permissions:{[users[1].email]:'edit',[users[2].email]:'view'}}));
+ let receipt=await under(users[0],()=>notifications.notifyTeamsCanvasShare(created.id,'Meet tomorrow'));
+ assert.equal(receipt.sent,1);assert.equal(receipt.unavailable,1);assert.equal(receipt.failed,0);assert.equal(deliveries[0].conversation,'personal-reader');assert.ok(deliveries[0].message.text.includes('Meet tomorrow'));assert.ok(!JSON.stringify(deliveries).includes('PRIVATE FINANCIAL DATA'));
+ const delivered=deliveries.length;
+ receipt=await under(users[1],()=>notifications.notifyTeamsCanvasShare(created.id,'not owner'));assert.ok(receipt.error);assert.equal(deliveries.length,delivered);
+ const route=Array.from(records.values()).find(v=>v.type==='CANVAS_TEAMS_ROUTE'&&v.principal===users[1].salesforcePrincipal);route.conversationId='forged-conversation';
+ receipt=await under(users[0],()=>notifications.notifyTeamsCanvasShare(created.id,'do not misroute'));assert.equal(receipt.sent,0);assert.equal(deliveries.length,delivered,'tampered conversation route must not receive notifications');
+ queryOverride=undefined;
+ const concurrent=await under(users[0],()=>share.createSharedCanvas('concurrent comments'));
+ await under(users[0],()=>share.changeSharedCanvas(concurrent.id,{action:'access',revision:1,enabled:true,readers:[users[1].email],permissions:{[users[1].email]:'comment'}}));
+ const concurrentUrl=`https://test.example.com/canvas/shared/${concurrent.id}`;
+ const ownerBefore=await handle(users[0],{text:concurrentUrl}),readerBefore=await handle(users[1],{text:concurrentUrl});
+ await handle(users[0],{value:{...action(ownerBefore.card,'post'),commentBody:'first'}});
+ result=await handle(users[1],{value:{...action(readerBefore.card,'post'),commentBody:'concurrent second'}});assert.ok(result.text.includes('投稿しました'));
+ report=await under(users[0],()=>share.getSharedCanvas(concurrent.id));assert.equal(report.comments.length,2);
+ const beforeEdit=action(result.card,'post');
+ await under(users[0],()=>share.changeSharedCanvas(concurrent.id,{action:'edit',revision:report.revision,document:{content:'changed report'}}));
+ result=await handle(users[1],{value:{...beforeEdit,commentBody:'must review changed document'}});assert.ok(!result.card);assert.equal(records.get('shared-canvas-'+concurrent.id).comments.length,2);
  console.log('PASS Teams Canvas: SDK message/card.action routes, verified roster identity, actor isolation, personal chat/tenant guards, links/cards, native comments/replies, no private content in cards, forged/expired/forwarded cards, duplicate writes, viewer downgrade, SF denial and revocation');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

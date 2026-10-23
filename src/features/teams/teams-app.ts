@@ -30,7 +30,8 @@ import {
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
 import { resolveSalesforceRoute } from "@/features/common/services/salesforce-routing";
 import { handleTeamsDeskNets } from "./teams-desknets-service";
-import { handleTeamsCanvas,isTeamsCanvasRequest,isTeamsCanvasSubmission,type CanvasTeamsActivity,type CanvasTeamsApi } from "./teams-canvas-service";
+import { handleTeamsCanvas,createTeamsPersonalCanvas,resolveTeamsCanvasActor,teamsAccountSelectionCard,isTeamsCanvasRequest,isTeamsCanvasSubmission,type CanvasTeamsActivity,type CanvasTeamsApi } from "./teams-canvas-service";
+import {personalSalesforceForEmail} from "@/features/common/services/salesforce-personal";
 import {
   isTeamsSalesforceConfigured,
   queryTeamsSalesforce,
@@ -114,11 +115,20 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
     },
   });
 
-  app.on("card.action",async({activity,api})=>{
-    const value=activity.value?.action?.data;
-    if(!isTeamsCanvasSubmission(value))return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"このカードの操作には対応していません。"};
-    const result=await handleTeamsCanvas({...activity,value} as CanvasTeamsActivity,api as CanvasTeamsApi);
+  app.on("card.action",async({activity,api,send})=>{
+    if(!isTeamsCanvasSubmission(activity.value))return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"このカードの操作には対応していません。"};
+    const result=await handleTeamsCanvas(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
+    // A client acknowledgement only means delivered. Emit a bot receipt after
+    // the shared service confirms the database commit (or an explicit error).
+    if(result.text)await send(result.text);
     return result.card?{statusCode:200 as const,type:"application/vnd.microsoft.card.adaptive" as const,value:result.card}:{statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:result.text??"操作結果を確認できません。"};
+  });
+
+  app.on("message.ext.card-button-clicked",async({activity,api,send})=>{
+    if(!isTeamsCanvasSubmission(activity.value))return;
+    const reply=await handleTeamsCanvas(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
+    if(reply.text)await send(reply.text);
+    if(reply.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
   });
 
   app.on("message", async ({ activity, send, api }) => {
@@ -179,6 +189,9 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         // Send first so a greeting is not delayed by Graph, Cosmos DB,
         // Azure AI Search, or Azure OpenAI.
         await send(instantReply);
+        if(process.env.SF_PERSONAL_MODE==="true"&&activity.conversation?.conversationType==="personal") {
+          try {await resolveTeamsCanvasActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);}catch { /* General greetings do not require Salesforce enrollment. */ }
+        }
         if (teamsUserId) {
           await recordTeamsThreadUsage({ conversationId, teamsUserId });
           await recordCompletedTeamsTurn({
@@ -205,6 +218,10 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
       // The LLM may decide to use ACL-aware internal search after this routing
       // step, so resolve the Teams member before entering the chat service.
       const userEmail = await resolveActivityUserEmail({ activity, api });
+      let verifiedPersonalActor:Awaited<ReturnType<typeof resolveTeamsCanvasActor>>|undefined;
+      if(process.env.SF_PERSONAL_MODE==="true"&&userEmail&&personalSalesforceForEmail(userEmail)&&activity.conversation?.conversationType==="personal") {
+        try {verifiedPersonalActor=await resolveTeamsCanvasActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);}catch { /* Non-SF chat remains available; SF requests fail closed below. */ }
+      }
       const automaticMemoryContext = await prepareTeamsAutomaticMemory({
         verifiedEmail: userEmail, conversationType: String(activity.conversation?.conversationType ?? ""),
         message: messageText, activityId,
@@ -253,11 +270,20 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
       }
 
       if (salesforceRouting.route === "salesforce" && userEmail) {
+        const personal=process.env.SF_PERSONAL_MODE==="true"&&personalSalesforceForEmail(userEmail);
+        if(personal&&/Canvas|キャンバス/i.test(messageText)) {
+          const result=await createTeamsPersonalCanvas(activity as CanvasTeamsActivity&{id?:string},api as CanvasTeamsApi,messageText);
+          if(result.text)await send(result.text);
+          if(result.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:result.card}]});
+          await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});return;
+        }
+        const actor=personal?verifiedPersonalActor??await resolveTeamsCanvasActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi):undefined;
         const reply = await queryTeamsSalesforce({
           message: messageText,
           userEmail,
           conversationId,
           activityId,
+          ...(actor?{actor,onAccountSelection:async(query,candidates)=>{await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:teamsAccountSelectionCard(actor,conversationId,query,candidates)}]});}}:{}),
         });
         await send(reply);
         await recordCompletedTeamsTurn({

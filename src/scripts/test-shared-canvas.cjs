@@ -61,7 +61,36 @@ async function main(){
  assert.equal(records.get('shared-canvas-'+cid).comments.length,2);
  user=users[0];await api.changeSharedCanvas(cid,{revision:8,action:'access',readers:[users[1].email],permissions:{[users[1].email]:'view'},enabled:true});
  user=users[1];await assert.rejects(()=>api.changeCanvasComment(cid,{revision:9,action:'create',body:'downgraded'}),e=>e.status===403);
+ // A lost response can be retried using the same request ID, but cannot bypass
+ // revocation, a role downgrade, SF checks, or another author's identity.
+ user=users[0];const retryReport=await api.createSharedCanvas('retry');
+ await api.changeSharedCanvas(retryReport.id,{revision:1,action:'access',readers:[users[1].email],permissions:{[users[1].email]:'comment'},enabled:true});
+ const requestId=require('node:crypto').randomUUID();
+ user=users[1];const posted=await api.changeCanvasComment(retryReport.id,{revision:2,action:'create',body:'once',requestId});
+ assert.equal(posted.comment.id,requestId);assert.equal(posted.comment.body,'once');assert.equal(posted.duplicate,false);
+ const retried=await api.changeCanvasComment(retryReport.id,{revision:2,action:'create',body:'once',requestId});assert.equal(retried.duplicate,true);assert.equal(retried.revision,3);
+ assert.equal(records.get('shared-canvas-'+retryReport.id).comments.length,1);
+ await assert.rejects(()=>api.changeCanvasComment(retryReport.id,{revision:2,action:'create',body:'changed',requestId}),e=>e.status===409);
+ allowed=false;await assert.rejects(()=>api.changeCanvasComment(retryReport.id,{revision:2,action:'create',body:'once',requestId}),e=>e.status===403);allowed=true;
+ user=users[0];await assert.rejects(()=>api.changeCanvasComment(retryReport.id,{revision:3,action:'create',body:'once',requestId}),e=>e.status===409);
+ await api.changeSharedCanvas(retryReport.id,{revision:3,action:'access',readers:[users[1].email],permissions:{[users[1].email]:'view'},enabled:true});
+ user=users[1];await assert.rejects(()=>api.changeCanvasComment(retryReport.id,{revision:2,action:'create',body:'once',requestId}),e=>e.status===403);
  const commentsRoute=load('app/(authenticated)/api/canvas/shared/[id]/comments/route.ts');
+ // Editor rights never imply ownership or permission to replace source proofs.
+ user=users[0];result=await api.getSharedCanvas(retryReport.id);
+ const access=await api.changeSharedCanvas(retryReport.id,{revision:result.revision,action:'access',enabled:true,readers:[users[1].email],permissions:{[users[1].email]:'edit'},message:'Initial sharing message'});
+ user=users[1];result=await api.getSharedCanvas(retryReport.id);assert.equal(result.canEdit,true);assert.equal(result.canComment,true);assert.ok(result.comments.some(c=>c.body==='Initial sharing message'));
+ await assert.rejects(()=>api.changeSharedCanvas(retryReport.id,{revision:access.revision,action:'access',enabled:true,readers:[users[2].email]}),e=>e.status===404);
+ await assert.rejects(()=>api.changeSharedCanvas(retryReport.id,{revision:access.revision,action:'edit',document:{threadId:'other'}}),e=>e.status===400);
+ allowed=false;await assert.rejects(()=>api.changeSharedCanvas(retryReport.id,{revision:access.revision,action:'edit',document:{content:'not allowed'}}),e=>e.status===403);allowed=true;
+ await api.changeSharedCanvas(retryReport.id,{revision:access.revision,action:'edit',document:{title:'Edited',content:'Edited body',unit:'円'}});
+ result=await api.getSharedCanvas(retryReport.id);assert.equal(result.document.title,'Edited');assert.equal(result.document.version,2);assert.equal(result.owner,false);
+ user=users[0];const beforeMessage=records.get('shared-canvas-'+retryReport.id)._etag;
+ await assert.rejects(()=>api.changeSharedCanvas(retryReport.id,{revision:result.revision,action:'access',enabled:true,readers:[users[1].email],message:'あ'.repeat(1400)}),e=>e.status===400);
+ assert.equal(records.get('shared-canvas-'+retryReport.id)._etag,beforeMessage,'invalid invitation message must not partially save the ACL');
+ const editRoute=load('app/(authenticated)/api/canvas/shared/[id]/route.ts'),longBody='訪問メモ'.repeat(2500);
+ const editResponse=await editRoute.PUT(new Request('https://ac.example.com/api/canvas/shared/'+retryReport.id,{method:'PUT',headers:{origin:'https://ac.example.com'},body:JSON.stringify({action:'edit',revision:result.revision,document:{content:longBody}})}),{params:{id:retryReport.id}});
+ assert.equal(editResponse.status,200,'editable reports support more than the old 8 KB sharing payload');assert.equal((await api.getSharedCanvas(retryReport.id)).document.content,longBody);
  assert.equal((await commentsRoute.POST(new Request('https://ac.example.com/api/canvas/shared/'+cid+'/comments',{method:'POST',headers:{origin:'https://evil.example.com'},body:'{}'}),{params:{id:cid}})).status,403);
  user=null;assert.equal((await commentsRoute.POST(new Request('https://ac.example.com/api/canvas/shared/'+cid+'/comments',{method:'POST',headers:{origin:'https://ac.example.com'},body:'{}'}),{params:{id:cid}})).status,401);
  process.env.CANVAS_SHARE_DIRECTORY_PROVIDER='salesforce';user=users[0];result=await api.getSharedCanvas(cid);assert.equal(result.restricted,true);assert.equal(result.comments,undefined);assert.equal(result.document,undefined);
