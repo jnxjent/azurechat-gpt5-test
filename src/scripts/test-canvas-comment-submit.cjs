@@ -36,6 +36,12 @@ async function main(){
   assert.equal(await find(tree,n=>n.type===Comments).props.onChange({action:'create',body:'saved',requestId:firstId}),true);
   assert.equal(requests,1);assert.equal(view.states[0].comments[0].body,'saved');assert.equal(view.states[0].revision,3);
   assert.ok(find(tree,n=>n.type==='a'&&n.props.href==='#comments'));
+  const previousNavigator=Object.getOwnPropertyDescriptor(global,'navigator'),previousWindow=global.window;let copied;
+  Object.defineProperty(global,'navigator',{configurable:true,value:{clipboard:{writeText:async value=>{copied=value;}}}});
+  global.window={location:{origin:'https://test.example.com',href:'https://test.example.com/teams/canvas'}};
+  find(tree,n=>n.type==='button'&&n.props.children==='共有URLをコピー').props.onClick();await tick();
+  assert.equal(copied,'https://test.example.com/canvas/shared/id','copy the canonical report link, never the Teams dialog URL');
+  if(previousNavigator)Object.defineProperty(global,'navigator',previousNavigator);else delete global.navigator;global.window=previousWindow;
   let posted=[];
   global.fetch=async(url,options)=>{
     if(!options?.method)return {ok:true,json:async()=>({...report,revision:3,comments:[{id:'other',body:'another user'}]})};

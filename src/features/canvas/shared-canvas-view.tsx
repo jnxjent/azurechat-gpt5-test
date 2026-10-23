@@ -127,7 +127,7 @@ export function SharedCanvasView({ id,embedded=false }: { id: string;embedded?:b
       <div className="flex flex-wrap gap-4">
         <button disabled={busy} type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => { void change("access"); }}>共有設定を保存</button>
         <button disabled={busy} type="button" className="rounded border px-3 py-2" onClick={() => { void change("refresh"); }}>{report.savedCanvas?"保存済みCanvasを反映":"SFから内容を更新"}</button>
-        <button type="button" className="rounded border px-3 py-2" onClick={() => { void navigator.clipboard.writeText(window.location.href).then(() => setNotice("共有URLをコピーしました。Teamsに貼り付けられます。")).catch(() => setError("アドレス欄からURLをコピーしてください。")); }}>共有URLをコピー</button>
+        <button type="button" className="rounded border px-3 py-2" onClick={() => { void navigator.clipboard.writeText(`${window.location.origin}/canvas/shared/${encodeURIComponent(id)}`).then(() => setNotice("共有URLをコピーしました。Teamsに貼り付けられます。")).catch(() => setError("共有URLをコピーできませんでした。")); }}>共有URLをコピー</button>
       </div>
       <p className="text-sm">共有を無効にすると、閲覧者の次回アクセス・再確認時に表示を停止します。{report.savedCanvas?"内容の更新では、元のチャットで保存したCanvasを同じURLへ反映します。":"更新は同じ依頼で再検索します。"}</p>
       {report.query && <p className="text-sm">取得依頼：{report.query}</p>}
