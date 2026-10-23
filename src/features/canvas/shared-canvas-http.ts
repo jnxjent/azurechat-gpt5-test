@@ -4,9 +4,9 @@ export const sharedCanvasHeaders = { "Cache-Control": "private, no-store", "Vary
 export function requireCanvasOrigin(request: Request) {
   if (request.headers.get("origin") !== new URL(process.env.NEXTAUTH_URL ?? request.url).origin) throw new CanvasShareError(403, "同じサイトから操作してください。");
 }
-export async function canvasShareInput(request: Request) {
+export async function canvasShareInput(request: Request, maxBytes=8000) {
   const text = await request.text();
-  if (new TextEncoder().encode(text).length > 8000) throw new CanvasShareError(400, "入力内容が大きすぎます。");
+  if (new TextEncoder().encode(text).length > maxBytes) throw new CanvasShareError(400, "入力内容が大きすぎます。");
   try { const value = JSON.parse(text); if (!value || typeof value !== "object" || Array.isArray(value)) throw Error(); return value; }
   catch { throw new CanvasShareError(400, "入力内容を確認してください。"); }
 }

@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { CanvasDocument, CanvasTable, canvasNumber, canvasTables, canvasMetadataSuggestions, canvasImportedMetadata, canvasStep } from "./canvas-rules";
 import { exportCanvasChart, printCanvas } from "./canvas-export";
 import { CanvasShareDialog } from "./canvas-share-dialog";
+import { canvasReportLayout } from "./canvas-report-layout";
 
 export function CanvasSuggestionInput({value,suggestion,onChange,className,maxLength,placeholder,id}:{value:string;suggestion:string;onChange:(value:string)=>void;className:string;maxLength:number;placeholder:string;id:string}) {
   const available=!value&&!!suggestion;
@@ -150,7 +151,7 @@ export function CanvasPanel({threadId,initialContent,chatContext="",onClose}:{th
         </DropdownMenu>
       </div>
     </div>
-    {sharing&&<CanvasShareDialog threadId={threadId} version={doc.version} dirty={dirty} saveCanvas={()=>save(true)} onClose={()=>setSharing(false)}/>}
+    {sharing&&<CanvasShareDialog threadId={threadId} version={doc.version} dirty={dirty} saveCanvas={()=>save(true)} reportTitle={canvasReportLayout(doc).title} onClose={()=>setSharing(false)}/>}
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 pb-10">
       {loading&&<p role="status">保存したCanvasを読み込み中…</p>}
       {error&&<p role="alert" className="text-sm text-red-500">{error}</p>}

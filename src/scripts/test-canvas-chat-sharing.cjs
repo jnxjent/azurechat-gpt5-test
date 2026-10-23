@@ -10,7 +10,7 @@ const cache=new Map(),root=path.resolve(__dirname,'..');
 function load(relative){const file=path.resolve(root,relative);if(cache.has(file))return cache.get(file);const mod={exports:{}};cache.set(file,mod.exports);const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;new Function('require','module','exports',code)(id=>stubs[id]??(id.startsWith('@/')?load(id.slice(2)+'.ts'):id.startsWith('.')?load(path.resolve(path.dirname(file),id+'.ts')):require(id)),mod,mod.exports);return mod.exports;}
 global.fetch=async(url,options)=>{calls++;assert.equal(url.origin,'https://personal.example.com');assert.equal(url.pathname,'/api/sf/revalidate_shared','sharing a saved Canvas never searches or calls the model');const identity=JSON.parse(Buffer.from(options.headers['X-AC-Identity'],'base64url'));assert.equal(identity.principal,user.salesforcePrincipal);assert.equal(identity.thread,'thread');assert.ok(['proof-1','proof-2'].includes(JSON.parse(options.body).proof));return Response.json({ok:true,allowed},{headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':user.salesforcePrincipal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});};
 async function main(){
- const configured=users.map(u=>({name:u.name,email:u.email,principal:u.salesforcePrincipal}));
+ const configured=users.map(u=>({name:u.name,email:u.email,principal:u.salesforcePrincipal,...(u===users[1]?{department:'営業部'}:{})}));
  configured.push({name:'Other tenant',email:'cross@example.com',principal:users[2].salesforcePrincipal.replace(tenant,'99999999-9999-9999-9999-999999999999')},{name:'Removed',email:'removed@example.com',principal:users[2].salesforcePrincipal.replace(/4/g,'5')});
  Object.assign(process.env,{NEXTAUTH_URL:'https://test.example.com',SF_PERSONAL_MODE:'true',SF_PERSONAL_SCOPE:'whitelist',SF_PERSONAL_AUTH_METHOD:'oauth',SF_PERSONAL_SNAPSHOT_POLICY:'strict',SF_PERSONAL_SIGNING_KEY:'x'.repeat(40),SF_PERSONAL_GATEWAY_BASE_URL:'https://personal.example.com',SF_GATEWAY_BASE_URL:'https://shared.example.com',CANVAS_SHARE_USERS_JSON:JSON.stringify(configured)});
  const access=load('features/common/services/salesforce-history-access.ts'),api=load('features/canvas/shared-canvas-service.ts'),rules=load('features/canvas/canvas-rules.ts'),{canvasIdFor}=load('features/canvas/canvas-service.ts');
@@ -18,7 +18,8 @@ async function main(){
  const message={id:'reply',type:'CHAT_MESSAGE',threadId:'thread',userId:owner,role:'assistant',name:'Azure Chat',content:'Monthly source',salesforceSnapshot:{proof:'proof-1',proofs:['proof-1','proof-2']}};message.historyAccess=access.sealHistoryMessage(message);messages.push(message);
  let doc=rules.validateCanvas({threadId:'thread',title:'Monthly report',content:'| Month | Amount |\n| --- | --- |\n| 2026-01 | 60000 |\n| 2026-03 | 23000 |',unit:'yen',period:'2026-01-01~2026-03-31',source:'Salesforce',chartType:'bar',tableIndex:0,valueColumn:1,valueColumns:[1],version:1,sourceMessageIds:['reply']});
  const storeDoc=()=>db.set(key(canvasIdFor('thread'),owner),{...doc,id:canvasIdFor('thread'),userId:owner,type:'USER_CANVAS',canvasAccessSeal:access.sealCanvas(doc,owner)});storeDoc();
- assert.deepEqual((await api.searchCanvasSharePeople('READER')).items,[{name:'reader',email:users[1].email}]);
+ assert.deepEqual((await api.searchCanvasSharePeople('READER')).items,[{name:'reader',email:users[1].email,department:'営業部'}]);
+ assert.equal((await api.searchCanvasSharePeople('営業部')).items[0].email,users[1].email);
  const people=await api.searchCanvasSharePeople('');assert.equal(people.items.length,2);assert.ok(!JSON.stringify(people).includes('principal'));
  assert.equal((await api.getSavedCanvasSharing('thread')).id,null);
  let input={threadId:'thread',version:1,revision:null,readers:[users[1].email],enabled:true};
@@ -32,11 +33,13 @@ async function main(){
  user=users[0];doc={...doc,title:'Updated title',chartType:'line',version:2};storeDoc();
  const updated=await api.publishSavedCanvas({...input,version:2,revision:1});assert.equal(updated.id,created.id);assert.equal(updated.revision,2);
  await assert.rejects(()=>api.publishSavedCanvas({...input,version:2,revision:1}),e=>e.status===409);
+ await api.changeCanvasComment(created.id,{revision:2,action:'create',body:'keep this discussion'});
+ const republished=await api.publishSavedCanvas({...input,version:2,revision:3});assert.equal(republished.revision,4);assert.equal((await api.getSharedCanvas(created.id)).comments[0].body,'keep this discussion');
  user=users[1];result=await api.getSharedCanvas(created.id);assert.equal(result.document.title,'Updated title');assert.equal(result.document.chartType,'line');allowed=false;await assert.rejects(()=>api.getSharedCanvas(created.id),e=>e.status===403);
- user=users[0];await api.publishSavedCanvas({...input,version:2,revision:2,readers:[],enabled:false});
+ user=users[0];await api.publishSavedCanvas({...input,version:2,revision:4,readers:[],enabled:false});
  user=users[1];await assert.rejects(()=>api.getSharedCanvas(created.id),e=>e.status===404);
- user=users[0];allowed=true;messages[0].content='tampered source';await assert.rejects(()=>api.publishSavedCanvas({...input,version:2,revision:3}),e=>e.status===422);
- messages[0].content='Monthly source';doc={...doc,sourceMessageIds:[],version:3};storeDoc();await assert.rejects(()=>api.publishSavedCanvas({...input,version:3,revision:3}),e=>e.status===422);
+ user=users[0];allowed=true;messages[0].content='tampered source';await assert.rejects(()=>api.publishSavedCanvas({...input,version:2,revision:5}),e=>e.status===422);
+ messages[0].content='Monthly source';doc={...doc,sourceMessageIds:[],version:3};storeDoc();await assert.rejects(()=>api.publishSavedCanvas({...input,version:3,revision:5}),e=>e.status===422);
  const route=load('app/(authenticated)/api/canvas/shared/from-thread/route.ts');
  const rejected=await route.POST(new Request('https://test.example.com/api/canvas/shared/from-thread',{method:'POST',headers:{origin:'https://evil.example.com'},body:JSON.stringify(input)}));assert.equal(rejected.status,403);
  user=null;const peopleRoute=load('app/(authenticated)/api/canvas/shared/people/route.ts');const denied=await peopleRoute.GET(new Request('https://test.example.com/api/canvas/shared/people?q=reader'));assert.equal(denied.status,401);assert.equal(denied.headers.get('cache-control'),'private, no-store');

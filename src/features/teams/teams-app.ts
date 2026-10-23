@@ -30,6 +30,7 @@ import {
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
 import { resolveSalesforceRoute } from "@/features/common/services/salesforce-routing";
 import { handleTeamsDeskNets } from "./teams-desknets-service";
+import { handleTeamsCanvas,isTeamsCanvasRequest,isTeamsCanvasSubmission,type CanvasTeamsActivity,type CanvasTeamsApi } from "./teams-canvas-service";
 import {
   isTeamsSalesforceConfigured,
   queryTeamsSalesforce,
@@ -113,6 +114,13 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
     },
   });
 
+  app.on("card.action",async({activity,api})=>{
+    const value=activity.value?.action?.data;
+    if(!isTeamsCanvasSubmission(value))return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"このカードの操作には対応していません。"};
+    const result=await handleTeamsCanvas({...activity,value} as CanvasTeamsActivity,api as CanvasTeamsApi);
+    return result.card?{statusCode:200 as const,type:"application/vnd.microsoft.card.adaptive" as const,value:result.card}:{statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:result.text??"操作結果を確認できません。"};
+  });
+
   app.on("message", async ({ activity, send, api }) => {
     const text = stripTeamsAttachmentMarkup(activity.text?.trim() ?? "");
     const conversationId = activity.conversation?.id;
@@ -124,6 +132,13 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
     }
 
     try {
+      if(isTeamsCanvasRequest(activity as CanvasTeamsActivity)) {
+        const reply=await handleTeamsCanvas(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
+        if(reply.text)await send(reply.text);
+        if(reply.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
+        if(activity.from?.id)try {await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId:activity.from.id});}catch{console.warn("[teams-canvas] Usage statistics could not be recorded");}
+        return;
+      }
       const teamsThreadId = buildTeamsThreadId(conversationId);
       let uploadedFiles: TeamsStoredFile[] = [];
       try {
