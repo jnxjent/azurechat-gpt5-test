@@ -4,6 +4,7 @@ function harness(file,initial=[],stubs={}) {
   let cursor=0;const states=[...initial],refs=[];
   const react={useState(value){const i=cursor++;if(!(i in states))states[i]=value;return [states[i],v=>{states[i]=typeof v==='function'?v(states[i]):v;}];},useRef(value){const i=cursor++;return refs[i]??(refs[i]={current:value});},useCallback:fn=>fn,useEffect(){}};
   stubs['./shared-canvas-editor']??={SharedCanvasEditor:()=>null};
+  stubs['./canvas-fetch']??={canvasFetch:(...args)=>global.fetch(...args)};
   const code=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,jsx:ts.JsxEmit.ReactJSX}}).outputText;
   const mod={exports:{}};new Function('require','module','exports',code)(id=>id==='react'?react:id in stubs?stubs[id]:require(id),mod,mod.exports);
   return {states,exports:mod.exports,render(fn){cursor=0;return fn();}};

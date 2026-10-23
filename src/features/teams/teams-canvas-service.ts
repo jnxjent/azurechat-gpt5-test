@@ -8,10 +8,25 @@ import {queryTeamsSalesforce} from "./teams-salesforce-service";
 import type {SalesforceAccount} from "@/features/common/services/salesforce-account-selection";
 import {rememberTeamsCanvasConversation,notifyTeamsCanvasShare} from "./teams-canvas-notifications";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
+import {canvasDialogUrl} from "./teams-canvas-dialog";
 
 export type CanvasTeamsActivity={channelId?:unknown;text?:unknown;value?:unknown;conversation?:{id?:string;conversationType?:unknown;tenantId?:unknown};from?:{id?:string;aadObjectId?:unknown};channelData?:{tenant?:{id?:unknown}}};
 export type CanvasTeamsApi={conversations:{members:(id:string)=>{getById:(id:string)=>Promise<{id?:string;aadObjectId?:string;tenantId?:string;email?:string;userPrincipalName?:string}>}}};
 export type TeamsCanvasReply={text?:string;card?:IAdaptiveCard};
+/** Fast invoke response: SF retrieval runs after the HTML dialog is open. */
+export async function openTeamsCanvasDialog(activity:CanvasTeamsActivity,api:CanvasTeamsApi) {
+  const actor=await resolveTeamsCanvasActor(activity,api),data=teamsCanvasSubmission(activity.value);
+  if(!data||typeof data.shareId!=="string"||!uuid.test(data.shareId))throw new TeamsCanvasError("Canvasのカードから操作してください。");
+  const claim=verify(data.token,actor,activity.conversation!.id!,data.shareId);
+  if(data.operation==="chooseAccount") {
+    if(!claim.canvas||!claim.query||typeof data.accountId!=="string"||!claim.accounts?.includes(data.accountId))throw new TeamsCanvasError("取引先を選択してください。");
+    const hex=createHmac("sha256",key()).update("teams-canvas-create-v1:"+JSON.stringify([actor.salesforcePrincipal,claim.nonce,data.accountId])).digest("hex");
+    const id=`${hex.slice(0,8)}-${hex.slice(8,12)}-4${hex.slice(13,16)}-8${hex.slice(17,20)}-${hex.slice(20,32)}`;
+    return canvasDialogUrl(actor,{id,query:claim.query,accountId:data.accountId});
+  }
+  if(data.operation!=="dialog")throw new TeamsCanvasError("操作を確認してください。");
+  return canvasDialogUrl(actor,{id:data.shareId});
+}
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const feature="ac.canvas";
 const permissionField=(email:string)=>"role_"+createHash("sha256").update(email).digest("hex").slice(0,16);
@@ -86,7 +101,7 @@ const creations=new Map<string,Promise<TeamsCanvasReply>>();
 async function createCard(actor:CanvasActor,conversation:string,query:string,accountId?:string):Promise<TeamsCanvasReply> {
   try {
     const created=await createSharedCanvas(query,{accountId});
-    return {text:"本人のSalesforce参照権限でCanvasを作成しました。カードから確認・編集・共有できます。",card:buildCard(actor,conversation,created.id,await getSharedCanvas(created.id))};
+    return {text:`本人のSalesforce参照権限でCanvasを作成しました。Teams内の画面から確認・編集・共有できます。\n${new URL(`/canvas/shared/${created.id}`,baseUrl()).href}`,card:buildCard(actor,conversation,created.id,await getSharedCanvas(created.id))};
   }catch(error) {
     if(!(error instanceof CanvasAccountSelectionError))throw error;
     return {card:teamsAccountSelectionCard(actor,conversation,error.query,error.candidates,true)};
@@ -95,7 +110,7 @@ async function createCard(actor:CanvasActor,conversation:string,query:string,acc
 export function teamsAccountSelectionCard(actor:CanvasActor,conversation:string,query:string,candidates:SalesforceAccount[],canvas=false):IAdaptiveCard {
   if(query.length>1000||!candidates.length||candidates.length>50)throw new TeamsCanvasError("検索条件と候補を確認してください。");
   const shareId=randomUUID(),token=issue(actor,conversation,shareId,1,{query,accounts:candidates.map(v=>v.id),canvas});
-  return {type:"AdaptiveCard",version:"1.4",body:[{type:"TextBlock",text:"Salesforceの取引先を選択してください。",weight:"Bolder",wrap:true},{type:"TextBlock",text:"選択した取引先だけを、元の依頼の期間・集計条件で取得します。",wrap:true},{type:"Input.ChoiceSet",id:"accountId",label:"対象の取引先",isRequired:true,errorMessage:"取引先を選んでください。",choices:candidates.map(v=>({title:`${v.name} ／ ${v.billing_city||"所在地未登録"} ／ ${v.id}`,value:v.id}))}],actions:[{type:"Action.Submit",title:canvas?"この取引先でCanvasを作成":"この取引先を検索",data:{feature,operation:"chooseAccount",shareId,token}}]};
+  return {type:"AdaptiveCard",version:"1.4",body:[{type:"TextBlock",text:"Salesforceの取引先を選択してください。",weight:"Bolder",wrap:true},{type:"TextBlock",text:"選択した取引先だけを、元の依頼の期間・集計条件で取得します。",wrap:true},{type:"Input.ChoiceSet",id:"accountId",label:"対象の取引先",isRequired:true,errorMessage:"取引先を選んでください。",choices:candidates.map(v=>({title:`${v.name} ／ ${v.billing_city||"所在地未登録"} ／ ${v.id}`,value:v.id}))}],actions:[{type:"Action.Submit",title:canvas?"この取引先でCanvasを作成":"この取引先を検索",data:{feature,operation:"chooseAccount",shareId,token,...(canvas?{msteams:{type:"task/fetch"}}:{})}}]};
 }
 export async function createTeamsPersonalCanvas(activity:CanvasTeamsActivity&{id?:string},api:CanvasTeamsApi,query:string):Promise<TeamsCanvasReply> {
   try {
@@ -117,7 +132,7 @@ function buildCard(actor:CanvasActor,conversation:string,shareId:string,report:C
     {type:"TextBlock",text:"コメントは送信すると保存されます。投稿完了はBOTからお知らせします。本文とコメントはWeb画面で確認できます。",wrap:true}];
   if(notice)body.push({type:"TextBlock",text:notice,wrap:true});
   const commentsLink=mode==="comments"||notice?.startsWith("コメント");
-  const actions:NonNullable<IAdaptiveCard["actions"]>=[{type:"Action.OpenUrl",title:commentsLink?"コメントを確認":"レポート・共有設定を開く",url:commentsLink?url+"#comments":url},action("refresh","状態を再確認")];
+  const actions:NonNullable<IAdaptiveCard["actions"]>=[{type:"Action.Submit",title:"Teams内でレポートを開く",data:{feature,operation:"dialog",shareId,token,msteams:{type:"task/fetch"}}},{type:"Action.OpenUrl",title:commentsLink?"コメントを確認":"ブラウザーで開く",url:commentsLink?url+"#comments":url},action("refresh","状態を再確認")];
   if(mode==="edit"&&!report.restricted&&"canEdit" in report&&report.canEdit&&"document" in report&&report.document) {
     const doc=report.document;
     body.push({type:"TextBlock",text:"共有レポートを編集します。元のチャットとSalesforceのレコードは変更しません。",wrap:true},
@@ -138,8 +153,8 @@ function buildCard(actor:CanvasActor,conversation:string,shareId:string,report:C
     actions.push(action("people","候補を検索",true));
     if(available.size)body.push({type:"Input.ChoiceSet",id:"readers",label:"共有先を選択",isMultiSelect:true,value:selected.join(","),choices:Array.from(available.values()).map(v=>({title:`${v.name} ／ ${v.department||"部署未登録"} ／ ${v.email}`,value:v.email}))},
       {type:"Input.ChoiceSet",id:"permission",label:"権限の一括設定",value:["keep","view","comment","edit"].includes(String(draft.permission))?String(draft.permission):"keep",choices:[{title:"個別設定を使う（新規は閲覧可）",value:"keep"},{title:"全員を閲覧可",value:"view"},{title:"全員をコメント可",value:"comment"},{title:"全員を編集可",value:"edit"}]},
-      {type:"Input.Text",id:"sharingMessage",label:"共有メッセージ（任意・4000バイト以内）",value:typeof draft.sharingMessage==="string"?draft.sharingMessage:"",isMultiline:true,maxLength:4000},
-      {type:"Input.Toggle",id:"notifyTeams",title:"Teamsで共有先に通知する",value:draft.notifyTeams==="false"?"false":"true"},
+      {type:"Input.Text",id:"sharingMessage",label:"共有メッセージ（Teams通知で送信・任意・4000バイト以内）",value:typeof draft.sharingMessage==="string"?draft.sharingMessage:"",isMultiline:true,maxLength:4000},
+      {type:"Input.Toggle",id:"notifyTeams",title:"Teamsでリンクと共有メッセージを送る（オフなら送信しません）",value:draft.notifyTeams==="false"?"false":"true"},
       {type:"Input.Toggle",id:"sharingEnabled",title:"選択した相手への共有を有効にする",value:draft.sharingEnabled==="true"||draft.sharingEnabled!=="false"&&report.enabled?"true":"false"});
     for(const email of selected) {
       const field=permissionField(email),person=available.get(email);
@@ -147,7 +162,7 @@ function buildCard(actor:CanvasActor,conversation:string,shareId:string,report:C
     }
     if(available.size)actions.push(action("people","選択した相手の個別権限を設定",true));
     if(available.size)actions.push(action("access","共有する",true));
-    actions.push(action("revoke","共有を解除"));
+    body.push({type:"ActionSet",actions:[action("revoke","共有を解除")]});
     return finish({type:"AdaptiveCard",version:"1.4",body,actions});
   }
   if(mode==="comments"&&!report.restricted&&"comments" in report) {
@@ -169,7 +184,7 @@ function buildCard(actor:CanvasActor,conversation:string,shareId:string,report:C
     body.push({type:"Input.ChoiceSet",id:"replyTo",label:"投稿先",value:"new",choices:[{title:"レポート全体へ新規コメント",value:"new"},...roots.map((c,i)=>({title:`コメント ${i+1}（${new Date(c.createdAt).toLocaleString("ja-JP",{timeZone:"Asia/Tokyo"})} 日本時間）`,value:c.id}))]},
       {type:"Input.Text",id:"commentBody",label:"コメント・返信",isMultiline:true,isRequired:true,maxLength:4000,errorMessage:"コメントを入力してください。",placeholder:"4000バイト以内（日本語の目安：約1300文字）"});
     if((report.comments??[]).filter(c=>!c.parentId&&!c.deleted).length>20)body.push({type:"TextBlock",text:"返信先は最新20件です。古いコメントへの返信はWeb画面をご利用ください。",wrap:true});
-    actions.push(action("post","コメントを送信",true));
+    body.push({type:"ActionSet",actions:[action("post","コメントを送信",true)]});
   } else body.push({type:"TextBlock",text:report.restricted?"現在の参照権限を確認できません。Web画面で接続状態・共有設定をご確認ください。":"閲覧のみの権限です。コメントするには所有者へ権限変更を依頼してください。",wrap:true});
   return finish({type:"AdaptiveCard",version:"1.4",body,actions});
 }
@@ -220,10 +235,10 @@ export async function handleTeamsCanvas(activity:CanvasTeamsActivity,api:CanvasT
           const role=data!.permission??"keep";
           if(!["keep","view","comment","edit"].includes(String(role)))throw new TeamsCanvasError("共有権限を確認してください。");
           const enabled=data!.operation!=="revoke"&&data!.sharingEnabled==="true";
-          await changeSharedCanvas(shareId,{action:"access",revision:claim.revision,enabled,readers:enabled?readers:[],permissions:enabled?Object.fromEntries(readers.map(email=>[email,role==="keep"?data![permissionField(email)]??current.permissions?.[email]??"view":role])):{},message:enabled?data!.sharingMessage:undefined});
+          await changeSharedCanvas(shareId,{action:"access",revision:claim.revision,enabled,readers:enabled?readers:[],permissions:enabled?Object.fromEntries(readers.map(email=>[email,role==="keep"?data![permissionField(email)]??current.permissions?.[email]??"view":role])):{},message:enabled&&data!.notifyTeams==="true"?data!.sharingMessage:undefined});
           const notified=enabled&&data!.notifyTeams==="true"?await notifyTeamsCanvasShare(shareId,data!.sharingMessage):undefined;
           const notification=notified?` Teams通知：送信${notified.sent}件・BOT未登録等${notified.unavailable}件・失敗${notified.failed}件。${notified.error??""}`:"";
-          return {text:(enabled?"共有しました。メッセージはレポートのコメント欄にも保存しました。":"共有を解除しました。")+notification,card:buildCard(actor,conversation,shareId,await getSharedCanvas(shareId))};
+          return {text:(enabled?"共有しました。共有メッセージは通知を有効にした場合のみTeamsで送信します。レポートのコメント欄には投稿されません。":"共有を解除しました。")+notification,card:buildCard(actor,conversation,shareId,await getSharedCanvas(shareId))};
         }
         if(data!.operation==="post") {
           if(typeof data!.commentBody!=="string"||!data!.commentBody.trim()||new TextEncoder().encode(data!.commentBody).length>4000)throw new TeamsCanvasError("コメントは空欄にせず、4000バイト以内で入力してください。");

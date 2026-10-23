@@ -32,6 +32,7 @@ import { resolveSalesforceRoute } from "@/features/common/services/salesforce-ro
 import { handleTeamsDeskNets } from "./teams-desknets-service";
 import { handleTeamsCanvas,createTeamsPersonalCanvas,resolveTeamsCanvasActor,teamsAccountSelectionCard,isTeamsCanvasRequest,isTeamsCanvasSubmission,type CanvasTeamsActivity,type CanvasTeamsApi } from "./teams-canvas-service";
 import {personalSalesforceForEmail} from "@/features/common/services/salesforce-personal";
+import {openTeamsCanvasDialog} from "./teams-canvas-service";
 import {
   isTeamsSalesforceConfigured,
   queryTeamsSalesforce,
@@ -113,6 +114,13 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
     activity: {
       mentions: { stripText: true },
     },
+  });
+
+  app.on("dialog.open",async({activity,api})=>{
+    try {
+      const url=await openTeamsCanvasDialog(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
+      return {task:{type:"continue" as const,value:{title:"Salesforce Canvas",height:"large" as const,width:"large" as const,url,fallbackUrl:url}}};
+    }catch{return {task:{type:"message" as const,value:"本人確認またはカードの有効期限を確認できません。BOTへ依頼を送り直してください。"}};}
   });
 
   app.on("card.action",async({activity,api,send})=>{

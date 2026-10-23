@@ -2,6 +2,8 @@
 const nextConfig = {
   output: "standalone",
 
+  async headers() {return [{source:"/teams/canvas/:path*",headers:[{key:"Content-Security-Policy",value:"frame-ancestors 'self' https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft https://*.office.com"},{key:"Referrer-Policy",value:"no-referrer"},{key:"Cache-Control",value:"private, no-store"}]}];},
+
   experimental: {
     outputFileTracingIncludes: {
       "/*": [

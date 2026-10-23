@@ -79,7 +79,7 @@ async function main(){
  // Editor rights never imply ownership or permission to replace source proofs.
  user=users[0];result=await api.getSharedCanvas(retryReport.id);
  const access=await api.changeSharedCanvas(retryReport.id,{revision:result.revision,action:'access',enabled:true,readers:[users[1].email],permissions:{[users[1].email]:'edit'},message:'Initial sharing message'});
- user=users[1];result=await api.getSharedCanvas(retryReport.id);assert.equal(result.canEdit,true);assert.equal(result.canComment,true);assert.ok(result.comments.some(c=>c.body==='Initial sharing message'));
+ user=users[1];result=await api.getSharedCanvas(retryReport.id);assert.equal(result.canEdit,true);assert.equal(result.canComment,true);assert.ok(!result.comments.some(c=>c.body==='Initial sharing message'));
  await assert.rejects(()=>api.changeSharedCanvas(retryReport.id,{revision:access.revision,action:'access',enabled:true,readers:[users[2].email]}),e=>e.status===404);
  await assert.rejects(()=>api.changeSharedCanvas(retryReport.id,{revision:access.revision,action:'edit',document:{threadId:'other'}}),e=>e.status===400);
  allowed=false;await assert.rejects(()=>api.changeSharedCanvas(retryReport.id,{revision:access.revision,action:'edit',document:{content:'not allowed'}}),e=>e.status===403);allowed=true;

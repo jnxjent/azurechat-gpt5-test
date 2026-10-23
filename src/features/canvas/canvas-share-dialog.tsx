@@ -1,4 +1,5 @@
 "use client";
+import {canvasFetch} from "./canvas-fetch";
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/features/ui/dialog";
 type Person={email:string;name:string;department?:string};
@@ -12,7 +13,7 @@ export function CanvasPeoplePicker({selected,onChange,disabled=false,permissions
     const controller=new AbortController();setLoading(true);setError("");setItems([]);
     const timer=setTimeout(()=>{void(async()=>{
       try {
-        const response=await fetch(`/api/canvas/shared/people?q=${encodeURIComponent(query)}`,{cache:"no-store",signal:controller.signal});
+        const response=await canvasFetch(`/api/canvas/shared/people?q=${encodeURIComponent(query)}`,{cache:"no-store",signal:controller.signal});
         const data=await response.json();if(!response.ok)throw Error(data.error||"候補を検索できませんでした。");
         if(!controller.signal.aborted){setItems(data.items);setMore(data.hasMore);setKnown(previous=>({...previous,...Object.fromEntries(data.items.map((person:Person)=>[person.email,person]))}));}
       }catch(error){if(!controller.signal.aborted)setError(error instanceof Error?error.message:"候補を検索できませんでした。");}
@@ -38,7 +39,7 @@ export function CanvasShareDialog({threadId,version,dirty,saveCanvas,onClose,rep
   useEffect(()=>{
     const controller=new AbortController();
     void(async()=>{try {
-      const response=await fetch(`/api/canvas/shared/from-thread?threadId=${encodeURIComponent(threadId)}`,{cache:"no-store",signal:controller.signal});
+      const response=await canvasFetch(`/api/canvas/shared/from-thread?threadId=${encodeURIComponent(threadId)}`,{cache:"no-store",signal:controller.signal});
       const data=await response.json();if(!response.ok)throw Error(data.error||"共有設定を確認できませんでした。");
       if(!controller.signal.aborted){setSharing(data);setSelected(data.readers);setPermissions(data.permissions??{});setEnabled(data.id?data.enabled:true);}
     }catch(error){if(!controller.signal.aborted)setError(error instanceof Error?error.message:"共有設定を確認できませんでした。");}finally{if(!controller.signal.aborted)setLoading(false);}})();
@@ -48,7 +49,7 @@ export function CanvasShareDialog({threadId,version,dirty,saveCanvas,onClose,rep
     if(!sharing||busy)return;setBusy(true);setError("");setNotice("");
     try {
       const savedVersion=enabled&&dirty?await saveCanvas():version;
-      const response=await fetch("/api/canvas/shared/from-thread",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId,version:savedVersion,revision:sharing.revision,readers:selected,permissions:Object.fromEntries(selected.map(email=>[email,permissions?.[email]??"view"])),enabled,message:enabled?message:undefined,notifyTeams:enabled&&notifyTeams}),cache:"no-store"});
+      const response=await canvasFetch("/api/canvas/shared/from-thread",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId,version:savedVersion,revision:sharing.revision,readers:selected,permissions:Object.fromEntries(selected.map(email=>[email,permissions?.[email]??"view"])),enabled,message:enabled&&notifyTeams?message:undefined,notifyTeams:enabled&&notifyTeams}),cache:"no-store"});
       const data=await response.json();if(!response.ok)throw Error(data.error||"共有を保存できませんでした。");
       setSharing(data);setSelected(data.readers);setPermissions(data.permissions??{});setEnabled(data.enabled);setMessage("");setNotice((data.enabled?"共有しました。同じURLで閲覧できます。":"共有を解除しました。")+canvasNotificationNotice(data.notifications));
     }catch(error){setError(error instanceof Error?error.message:"共有を保存できませんでした。");}finally{setBusy(false);}
@@ -61,7 +62,7 @@ export function CanvasShareDialog({threadId,version,dirty,saveCanvas,onClose,rep
       <CanvasPeoplePicker selected={selected} onChange={setSelected} permissions={permissions} onPermissionsChange={setPermissions} disabled={busy}/>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} disabled={busy} onChange={e=>setEnabled(e.target.checked)}/>選択した相手への共有を有効にする</label>
       {enabled&&<label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={notifyTeams} disabled={busy} onChange={e=>setNotifyTeams(e.target.checked)}/><span>Teamsで共有先に通知する<small className="block">相手がこのBOTへ一度「こんにちは」などを送ると通知できます。未送信は結果に表示します。</small></span></label>}
-      {enabled&&<label className="block text-sm">共有メッセージ（任意）<textarea className="mt-1 block min-h-20 w-full rounded border bg-background p-2" value={message} onChange={e=>setMessage(e.target.value)} disabled={busy} maxLength={4000} placeholder="共有相手へのメッセージを入力"/><span className="text-xs">共有と同時にレポートのコメント欄へ投稿します。</span></label>}
+      {enabled&&<label className="block text-sm">共有メッセージ（任意）<textarea className="mt-1 block min-h-20 w-full rounded border bg-background p-2" value={message} onChange={e=>setMessage(e.target.value)} disabled={busy||!notifyTeams} maxLength={4000} placeholder="共有相手へのメッセージを入力"/><span className="text-xs">Teams通知でリンクと一緒に送信します。コメント欄には投稿しません。通知をオフにすると送信しません。</span></label>}
       {dirty&&enabled&&<p className="text-sm">「共有を保存」で、現在のCanvasも保存して共有します。修正依頼が入力されている場合は、その修正も反映します。</p>}
       <button type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy||(enabled&&!selected.length)} onClick={()=>void save()}>{busy?"保存中…":enabled?"共有を保存":"共有を解除"}</button>
       {url&&sharing.enabled&&<div className="space-y-2"><label className="block text-sm">共有URL<input readOnly value={url} className="block w-full rounded border bg-background p-2" onFocus={e=>e.target.select()}/></label><button type="button" className="rounded border px-3 py-1" onClick={()=>{void navigator.clipboard.writeText(url).then(()=>setNotice("共有URLをコピーしました。Teamsなどに貼り付けてください。"),()=>setError("URL欄からコピーしてください。"));}}>共有URLをコピー</button></div>}

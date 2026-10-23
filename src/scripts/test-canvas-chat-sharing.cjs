@@ -26,7 +26,8 @@ async function main(){
  await assert.rejects(()=>api.publishSavedCanvas({...input,version:9}),e=>e.status===409);
  await assert.rejects(()=>api.publishSavedCanvas({...input,readers:['cross@example.com']}),e=>e.status===400);
  await assert.rejects(()=>api.publishSavedCanvas({...input,readers:['removed@example.com']}),e=>e.status===400);
- const created=await api.publishSavedCanvas({...input,document:{content:'forged client document'}});assert.ok(created.id);assert.equal(calls,2,'every source dependency is checked');
+ const created=await api.publishSavedCanvas({...input,message:'Invitation, not a report comment',document:{content:'forged client document'}});assert.ok(created.id);assert.equal(calls,2,'every source dependency is checked');
+ assert.equal((await api.getSharedCanvas(created.id)).comments.length,0,'sharing message must not create a report comment');
  let result=await api.getSharedCanvas(created.id);assert.equal(result.document.content,doc.content);assert.equal(result.document.chartType,'bar');assert.deepEqual(result.document.valueColumns,[1]);assert.equal(result.document.sourceMessageIds,undefined);assert.ok(!JSON.stringify(result).includes('proof-'));
  user=users[1];result=await api.getSharedCanvas(created.id);assert.equal(result.document.content,doc.content);
  user=users[2];const before=calls;await assert.rejects(()=>api.getSharedCanvas(created.id),e=>e.status===404);assert.equal(calls,before);await assert.rejects(()=>api.publishSavedCanvas(input),e=>e.status===404);
@@ -34,7 +35,7 @@ async function main(){
  const updated=await api.publishSavedCanvas({...input,version:2,revision:1});assert.equal(updated.id,created.id);assert.equal(updated.revision,2);
  await assert.rejects(()=>api.publishSavedCanvas({...input,version:2,revision:1}),e=>e.status===409);
  await api.changeCanvasComment(created.id,{revision:2,action:'create',body:'keep this discussion'});
- const republished=await api.publishSavedCanvas({...input,version:2,revision:3});assert.equal(republished.revision,4);assert.equal((await api.getSharedCanvas(created.id)).comments[0].body,'keep this discussion');
+ const republished=await api.publishSavedCanvas({...input,version:2,revision:3,message:'Updated invitation'});assert.equal(republished.revision,4);assert.deepEqual((await api.getSharedCanvas(created.id)).comments.map(c=>c.body),['keep this discussion']);
  user=users[1];result=await api.getSharedCanvas(created.id);assert.equal(result.document.title,'Updated title');assert.equal(result.document.chartType,'line');allowed=false;await assert.rejects(()=>api.getSharedCanvas(created.id),e=>e.status===403);
  user=users[0];await api.publishSavedCanvas({...input,version:2,revision:4,readers:[],enabled:false});
  user=users[1];await assert.rejects(()=>api.getSharedCanvas(created.id),e=>e.status===404);

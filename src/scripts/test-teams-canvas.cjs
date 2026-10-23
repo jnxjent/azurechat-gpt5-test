@@ -22,8 +22,9 @@ const api={conversations:{members:conversation=>({getById:async id=>{const user=
 const activity=(user,extra={})=>({channelId:'msteams',conversation:{id:'personal-'+user.name,conversationType:'personal',tenantId:tenant},from:{id:'teams-'+user.name,aadObjectId:user.salesforcePrincipal.split(':')[1]},...extra});
 const actor=user=>({salesforcePrincipal:user.salesforcePrincipal,email:user.email});
 const under=(user,fn)=>actors.withCanvasActor(actor(user),fn);
-const action=(card,operation)=>card.actions.find(a=>a.data?.operation===operation).data;
-const handle=(user,extra)=>teams.handleTeamsCanvas(activity(user,extra),api);
+const cardActions=card=>[...(card.actions??[]),...(card.body??[]).flatMap(v=>v.type==='ActionSet'?v.actions:[])];
+const action=(card,operation)=>cardActions(card).find(a=>a.data?.operation===operation).data;
+const handle=async(user,extra)=>{const result=await teams.handleTeamsCanvas(activity(user,extra),api);if(result.card)assert.ok(result.card.actions.length<=6,'Teams cards must have at most six primary actions');return result;};
 async function main(){
  Object.assign(process.env,{NEXTAUTH_URL:'https://test.example.com',TEAMS_TENANT_ID:tenant,TEAMS_SKIP_AUTH:'false',SF_PERSONAL_MODE:'true',SF_PERSONAL_AUTH_METHOD:'oauth',SF_PERSONAL_SNAPSHOT_POLICY:'strict',SF_PERSONAL_SIGNING_KEY:'x'.repeat(40),SF_GATEWAY_BASE_URL:'https://shared.example.com',SF_PERSONAL_GATEWAY_BASE_URL:'https://personal.example.com',SF_PERSONAL_USERS_JSON:JSON.stringify(users.map(u=>({principal:u.salesforcePrincipal,email:u.email}))),CANVAS_SHARE_USERS_JSON:JSON.stringify(users.map(u=>({principal:u.salesforcePrincipal,email:u.email,name:u.name,department:'営業部'})))});delete process.env.CANVAS_SHARE_DIRECTORY_PROVIDER;
  await assert.rejects(()=>actors.getCanvasActor(),/User not found/);
@@ -33,7 +34,7 @@ async function main(){
  assert.equal(teams.teamsCanvasLink('共有レポート '+url),created.id);
  for(const bad of [url.replace('test.example.com','evil.example.com'),url+'?x=1',url+'#x',url.replace('https:','http:'),url.replace('test.example.com','user@test.example.com')])assert.equal(teams.teamsCanvasLink(bad),null);
  let result=await handle(users[1],{text:url});assert.ok(result.card);assert.ok(!JSON.stringify(result).includes('PRIVATE FINANCIAL DATA'));
- let post=action(result.card,'post');assert.equal(result.card.actions.find(a=>a.data?.operation==='post').type,'Action.Submit');
+ let post=action(result.card,'post');assert.equal(cardActions(result.card).find(a=>a.data?.operation==='post').type,'Action.Submit');
  result=await handle(users[1],{value:{...post,commentBody:'PRIVATE DISCUSSION',replyTo:'new',email:users[0].email,principal:users[0].salesforcePrincipal}});assert.ok(result.card);assert.ok(!JSON.stringify(result).includes('PRIVATE DISCUSSION'));
  let report=await under(users[0],()=>share.getSharedCanvas(created.id));assert.equal(report.comments.length,1);assert.equal(report.comments[0].authorName,'reader');const comment=report.comments[0];
  const duplicate=await handle(users[1],{value:{...post,commentBody:'PRIVATE DISCUSSION',replyTo:'new'}});assert.ok(duplicate.text.includes('投稿しました'));assert.equal((await under(users[0],()=>share.getSharedCanvas(created.id))).comments.length,1);
@@ -93,7 +94,7 @@ async function main(){
  await routes.get('message.ext.card-button-clicked')({activity:buttonActivity,api,send:async()=>{}});
  assert.equal(records.get('shared-canvas-'+created.id).comments.length,5);
  card=sent.find(v=>v.attachments).attachments[0].content;
- assert.equal(card.actions.find(a=>a.data?.operation==='post').associatedInputs,'auto');
+ assert.equal(cardActions(card).find(a=>a.data?.operation==='post').associatedInputs,'auto');
  for(const envelope of [{feature:'other'},{data:{feature:'other'}},'invalid'])assert.equal(teams.isTeamsCanvasSubmission(envelope),false);
  assert.equal(teams.isTeamsCanvasSubmission(JSON.stringify(action(card,'post'))),true);
  // Native Teams sharing and editing use the very same ACL and source checks.
@@ -105,7 +106,7 @@ async function main(){
  assert.equal(result.card.body.find(v=>v.id==='sharingMessage').value,'Keep this draft');assert.equal(result.card.body.find(v=>v.id==='permission').value,'edit');assert.equal(result.card.body.find(v=>v.id==='notifyTeams').value,'false');
  result=await handle(users[0],{value:{...action(result.card,'access'),readers:users[1].email,permission:'edit',sharingEnabled:'true',sharingMessage:'Please review this report'}});
  assert.ok(result.text.includes('共有しました'));
- report=await under(users[1],()=>share.getSharedCanvas(created.id));assert.equal(report.canEdit,true);assert.equal(report.canComment,true);assert.ok(report.comments.some(c=>c.body==='Please review this report'));
+ report=await under(users[1],()=>share.getSharedCanvas(created.id));assert.equal(report.canEdit,true);assert.equal(report.canComment,true);assert.ok(!report.comments.some(c=>c.body==='Please review this report'));
  result=await handle(users[1],{text:url});result=await handle(users[1],{value:action(result.card,'editForm')});
  const editAction=action(result.card,'edit');
  const draft={...editAction,title:'Edited report',content:'Edited in Teams',unit:'円',period:'2026-01-01〜2026-03-31',chartType:'bar',tableIndex:1,valueColumn:2};
@@ -149,6 +150,35 @@ async function main(){
  const beforeEdit=action(result.card,'post');
  await under(users[0],()=>share.changeSharedCanvas(concurrent.id,{action:'edit',revision:report.revision,document:{content:'changed report'}}));
  result=await handle(users[1],{value:{...beforeEdit,commentBody:'must review changed document'}});assert.ok(!result.card);assert.equal(records.get('shared-canvas-'+concurrent.id).comments.length,2);
- console.log('PASS Teams Canvas: SDK message/card.action routes, verified roster identity, actor isolation, personal chat/tenant guards, links/cards, native comments/replies, no private content in cards, forged/expired/forwarded cards, duplicate writes, viewer downgrade, SF denial and revocation');
+ // A task/fetch only opens the dialog; expensive SF retrieval is deferred.
+ const dialogCard=teams.teamsAccountSelectionCard(actor(users[0]),activity(users[0]).conversation.id,'J＆T monthly Canvas',candidates,true);
+ assert.equal(dialogCard.actions[0].data.msteams.type,'task/fetch');
+ const taskActivity={...activity(users[0],{value:{data:{...action(dialogCard,'chooseAccount'),accountId:candidates[0].id}}}),type:'invoke',name:'task/fetch'};
+ assert.equal(router.select(taskActivity).length,1,'SDK must dispatch task/fetch to the dialog handler');
+ const sfBefore=sfCalls,task=await routes.get('dialog.open')({activity:taskActivity,api});
+ assert.equal(task.task.type,'continue');assert.equal(sfCalls,sfBefore,'opening the dialog must not query Salesforce');
+ const launch=new URL(task.task.value.url).hash.slice('#launch='.length),dialog=load('features/teams/teams-canvas-dialog.ts');
+ const loginStub=stubs['@/features/auth-page/helpers'];
+ await assert.rejects(()=>dialog.authorizeCanvasDialog(launch),/User not found/);
+ loginStub.getCurrentUser=async()=>users[1];
+ await assert.rejects(()=>dialog.authorizeCanvasDialog(launch),e=>e.status===403);
+ loginStub.getCurrentUser=async()=>users[0];
+ const granted=await dialog.authorizeCanvasDialog(launch);
+ const reopened=await routes.get('dialog.open')({activity:taskActivity,api});
+ const reopenedGrant=await dialog.authorizeCanvasDialog(new URL(reopened.task.value.url).hash.slice('#launch='.length));
+ assert.equal(reopenedGrant.id,granted.id,'repeating the same account button must reuse the report ID');
+ const request=new Request('https://test.example.com/api/teams/canvas/dialog',{headers:{Authorization:'Bearer '+granted.token}});
+ await assert.rejects(()=>dialog.withCanvasRequest(request,created.id,async()=>true),e=>e.status===403);
+ const recordCount=records.size;
+ const prepared=await dialog.prepareCanvasDialog(request);assert.equal(prepared.id,granted.id);assert.equal(records.size,recordCount+1);
+ const reportRoute=load('app/(authenticated)/api/canvas/shared/[id]/route.ts');
+ const scopedResponse=await reportRoute.GET(request,{params:{id:prepared.id}});assert.equal(scopedResponse.status,200);
+ assert.equal((await reportRoute.GET(request,{params:{id:created.id}})).status,403);
+ assert.equal((await dialog.prepareCanvasDialog(request)).id,prepared.id);assert.equal(records.size,recordCount+1,'retry reuses the same report');
+ await assert.rejects(()=>dialog.withCanvasRequest(new Request(request.url,{headers:{Authorization:'Bearer '+granted.token+'x'}}),granted.id,async()=>true),e=>e.status===401);
+ const originalNow=Date.now;Date.now=()=>originalNow()+31*60*1000;
+ try{await assert.rejects(()=>dialog.withCanvasRequest(request,granted.id,async()=>true),e=>e.status===401);}finally{Date.now=originalNow;}
+ loginStub.getCurrentUser=async()=>{throw Error('User not found');};
+ console.log('PASS Teams Canvas: SDK routes, immediate dialog response, same-user Web authorization, report-scoped tokens, expiry, tampering, idempotent preparation, native comments and sharing');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

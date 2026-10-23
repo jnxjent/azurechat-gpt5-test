@@ -114,7 +114,7 @@ export async function publishSavedCanvas(input:{threadId?:unknown;version?:unkno
   if(input.enabled&&!await revalidateCanvasSource(snapshot.source,user))throw new CanvasShareError(403,"現在のSalesforce権限でこのCanvasを共有できません。");
   const next:SharedCanvas={id:`shared-canvas-${id}`,userId:partition,type:"SHARED_CANVAS",ttl:-1,owner:user,readers,enabled:input.enabled,revision:(record?.revision??0)+1,updatedAt:new Date().toISOString(),...snapshot,...(record?.comments?{comments:record.comments}:{}),seal:""};
   if(record&&input.enabled)next.document={...next.document,version:Math.max(next.document.version,record.document.version+1)};
-  appendSharingMessage(next,user,input.message);
+  validateSharingMessage(next,input.message);
   next.seal=signature(next);
   try {
     if(record)await HistoryContainer().item(record.id,partition).replace(next,{accessCondition:{type:"IfMatch",condition:record._etag!}});
@@ -122,8 +122,9 @@ export async function publishSavedCanvas(input:{threadId?:unknown;version?:unkno
   } catch(error) { if([409,412].includes((error as {code:number}).code))throw new CanvasShareError(409,"共有設定が変更されています。共有画面を開き直してください。"); throw error; }
   return {id,...management(next,true)};
 }
-export async function createSharedCanvas(query: string,options:{accountId?:string}={}) {
-  const user = await currentCanvasShareUser(), id = randomUUID();
+export async function createSharedCanvas(query: string,options:{accountId?:string;id?:string}={}) {
+  const user = await currentCanvasShareUser(), id = options.id??randomUUID();
+  requireId(id);
   const snapshot = await retrieveCanvasSource(user, { provider: "salesforce", query: query.trim(),accountId:options.accountId });
   const record: SharedCanvas = { id: `shared-canvas-${id}`, userId: partition, type: "SHARED_CANVAS", ttl: -1, owner: user, readers: [], enabled: false, revision: 1, updatedAt: new Date().toISOString(), ...snapshot, seal: "" };
   record.seal = signature(record);
@@ -177,7 +178,7 @@ export async function changeSharedCanvas(id: string, input: { revision?: unknown
       next.document.version = record.document.version + 1;
     }
   } else throw new CanvasShareError(400, "操作を確認してください。");
-  if(input.action==="access")appendSharingMessage(next,user,input.message);
+  if(input.action==="access")validateSharingMessage(next,input.message);
   next.revision++; next.updatedAt = new Date().toISOString(); delete next._etag;
   next.seal = signature(next);
   try { await HistoryContainer().item(record.id, partition).replace(next, { accessCondition: { type: "IfMatch", condition: record._etag } }); }
@@ -185,12 +186,10 @@ export async function changeSharedCanvas(id: string, input: { revision?: unknown
   return management(next, owner);
 }
 
-function appendSharingMessage(record:SharedCanvas,user:CanvasShareUser,message:unknown) {
+function validateSharingMessage(record:SharedCanvas,message:unknown) {
   if(message===undefined||message==="")return;
   if(!record.enabled||typeof message!=="string"||!message.trim()||new TextEncoder().encode(message).length>4000)throw new CanvasShareError(400,"共有メッセージは4000バイト以内で入力してください。");
-  const comments=record.comments??[];
-  if(comments.length>=200)throw new CanvasShareError(400,"コメントの上限に達しています。");
-  record.comments=[...comments,{id:randomUUID(),author:{...user},body:message.trim(),createdAt:record.updatedAt,updatedAt:record.updatedAt,reportVersion:record.document.version}];
+  // Sharing messages belong to the recipient's conversation, not report comments.
 }
 
 /** Server-only notification target lookup; never accepts caller-provided addresses. */
