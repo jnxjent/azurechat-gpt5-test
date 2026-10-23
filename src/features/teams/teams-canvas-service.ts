@@ -132,7 +132,7 @@ function buildCard(actor:CanvasActor,conversation:string,shareId:string,report:C
     {type:"TextBlock",text:"コメントは送信すると保存されます。投稿完了はBOTからお知らせします。本文とコメントはWeb画面で確認できます。",wrap:true}];
   if(notice)body.push({type:"TextBlock",text:notice,wrap:true});
   const commentsLink=mode==="comments"||notice?.startsWith("コメント");
-  const actions:NonNullable<IAdaptiveCard["actions"]>=[{type:"Action.Submit",title:"Teams内でレポートを開く",data:{feature,operation:"dialog",shareId,token,msteams:{type:"task/fetch"}}},{type:"Action.OpenUrl",title:commentsLink?"コメントを確認":"ブラウザーで開く",url:commentsLink?url+"#comments":url},action("refresh","状態を再確認")];
+  const actions:NonNullable<IAdaptiveCard["actions"]>=[{type:"Action.Submit",title:"Teams内でレポートを開く",associatedInputs:"none",data:{feature,operation:"dialog",shareId,token,msteams:{type:"task/fetch"}}},{type:"Action.OpenUrl",title:commentsLink?"コメントを確認":"ブラウザーで開く",url:commentsLink?url+"#comments":url},action("refresh","状態を再確認")];
   if(mode==="edit"&&!report.restricted&&"canEdit" in report&&report.canEdit&&"document" in report&&report.document) {
     const doc=report.document;
     body.push({type:"TextBlock",text:"共有レポートを編集します。元のチャットとSalesforceのレコードは変更しません。",wrap:true},

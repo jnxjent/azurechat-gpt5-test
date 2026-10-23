@@ -75,6 +75,7 @@ async function main(){
  await appModule.exports.getTeamsRuntime();let sent=[];
  await routes.get('message')({activity:{...activity(users[1],{text:url}),id:'open-card'},api,send:async value=>sent.push(value)});
  const sdkCard=sent.find(v=>v.attachments)?.attachments[0].content;assert.ok(sdkCard);
+ assert.equal(cardActions(sdkCard).find(a=>a.data?.operation==='dialog').associatedInputs,'none','opening a dialog must not validate the empty comment field');
  const invoked=await routes.get('card.action')({activity:activity(users[1],{value:{action:{data:{...action(sdkCard,'post'),commentBody:'SDK invoke',replyTo:'new'}}}}),api,send:async value=>sent.push(value)});
  assert.equal(invoked.type,'application/vnd.microsoft.card.adaptive');
  assert.ok(sent.some(v=>typeof v==='string'&&v.includes('投稿しました')),'invoke must emit an explicit bot receipt after saving');
