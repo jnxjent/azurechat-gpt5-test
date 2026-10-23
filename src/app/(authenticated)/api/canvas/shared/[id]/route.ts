@@ -12,6 +12,7 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     requireCanvasOrigin(request);
     return await withCanvasRequest(request,params.id,async()=>{
       const input=await canvasShareInput(request,400000),saved=await changeSharedCanvas(params.id,input);
+      if(input.action==="access")console.info("[teams-canvas] sharing saved",{shareId:params.id,enabled:input.enabled===true,notifyRequested:input.notifyTeams===true,readers:Array.isArray(input.readers)?input.readers.length:0});
       const notifications=input.action==="access"&&input.enabled===true&&input.notifyTeams===true?await (await import("@/features/teams/teams-canvas-notifications")).notifyTeamsCanvasShare(params.id,input.message):undefined;
       return Response.json({...saved,...(notifications?{notifications}:{})}, { headers: sharedCanvasHeaders });
     });

@@ -51,6 +51,30 @@ async function main(){
   const tree2=view.render(()=>view.exports.SharedCanvasView({id:'id'}));
   assert.equal(await find(tree2,n=>n.type===Comments).props.onChange({action:'create',body:'saved',requestId:firstId}),true);
   assert.equal(posted.length,2);assert.equal(posted[1].revision,3);assert.equal(posted[0].requestId,posted[1].requestId);assert.equal(view.states[0].comments.length,2);
+  // A new Teams-created report starts disabled. Picking a recipient is an
+  // explicit sharing action and must enable it before saving/notifying.
+  const priorDocument=global.document;global.document={hidden:false};
+  async function sharingScenario({notify=true,disable=false,receipt={sent:1,unavailable:0,failed:0}}={}) {
+    let saved;
+    const initial={...report,enabled:false,readers:[]};
+    global.fetch=async(url,options)=>{
+      if(options?.method==='PUT'){saved=JSON.parse(options.body);return {ok:true,json:async()=>({revision:3,enabled:saved.enabled,notifications:saved.enabled&&saved.notifyTeams?receipt:undefined})};}
+      return {ok:true,json:async()=>({...initial,revision:3,enabled:saved.enabled,readers:saved.readers})};
+    };
+    const panel=harness('features/canvas/shared-canvas-view.tsx',[initial,'','',false,'',null,null,null,false,'',notify],{'react-markdown':{default:()=>null},'remark-gfm':{default:()=>{}},'./canvas-panel':{CanvasChart:()=>null},'./canvas-rules':{canvasTables:()=>[]},'./canvas-share-dialog':{CanvasPeoplePicker:()=>null,canvasNotificationNotice:v=>v?`Teams通知：送信${v.sent}件・BOT未登録等${v.unavailable}件・失敗${v.failed}件。`:''},'./canvas-report-layout':{canvasReportLayout:()=>({title:'report',body:'body'})},'./canvas-comments':{CanvasComments:Comments}});
+    const renderPanel=()=>panel.render(()=>panel.exports.SharedCanvasView({id:'id',embedded:true}));
+    find(renderPanel(),n=>n.type==='button'&&n.props.children==='共有').props.onClick();
+    assert.equal(find(renderPanel(),n=>n.type==='button'&&n.props.children==='共有設定を保存').props.disabled,true,'enabled sharing needs a recipient');
+    find(renderPanel(),n=>Array.isArray(n.props?.selected)&&typeof n.props.onChange==='function').props.onChange(['reader@example.com']);
+    assert.equal(panel.states[6],true,'recipient selection enables sharing');
+    if(disable)panel.states[6]=false;
+    const save=find(renderPanel(),n=>n.type==='button'&&n.props.children==='共有設定を保存');assert.equal(save.props.disabled,false);save.props.onClick();await tick();
+    assert.equal(saved.enabled,!disable);assert.equal(saved.notifyTeams,notify);assert.deepEqual(saved.readers,['reader@example.com']);
+    const local=find(renderPanel(),n=>n.type==='p'&&n.props.className==='rounded border bg-muted p-3');assert.ok(local,'result is visible next to the save controls');
+    assert.ok(local.props.children.includes(disable?'通知は送っていません':!notify?'オフ':`送信${receipt.sent}件`));
+  }
+  await sharingScenario();await sharingScenario({receipt:{sent:0,unavailable:1,failed:0}});await sharingScenario({notify:false});await sharingScenario({disable:true});
+  global.document=priorDocument;
   const editor=harness('features/canvas/shared-canvas-editor.tsx');let saved,closed=0,saveOK=false;
   const editorProps={document:{...document,unit:'円',period:'2026-01',chartType:'bar',valueColumn:1},busy:false,onCancel:()=>closed++,onSave:async input=>{saved=input;return saveOK;}};
   const editTree=()=>editor.render(()=>editor.exports.SharedCanvasEditor(editorProps));

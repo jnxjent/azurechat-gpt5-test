@@ -19,6 +19,7 @@ export async function rememberTeamsCanvasConversation(actor:CanvasActor,conversa
 export type CanvasNotificationResult={sent:number;unavailable:number;failed:number;error?:string};
 export async function notifyTeamsCanvasShare(shareId:string,message:unknown):Promise<CanvasNotificationResult> {
   const result:CanvasNotificationResult={sent:0,unavailable:0,failed:0};
+  console.info("[teams-canvas] share notification start",{shareId});
   try {
     if(process.env.TEAMS_ENABLED!=="true"||!botId()||process.env.TEAMS_SKIP_AUTH?.trim().toLowerCase()==="true")throw Error("Teams notifications unavailable");
     if(message!==undefined&&(typeof message!=="string"||new TextEncoder().encode(message).length>4000))throw Error("Invalid message");
@@ -32,10 +33,10 @@ export async function notifyTeamsCanvasShare(shareId:string,message:unknown):Pro
         const current=await canvasNotificationTargets(shareId,targets.revision);
         if(current.revision!==targets.revision||!current.readers.some(v=>v.principal===recipient.principal&&v.email===recipient.email)){result.unavailable++;continue;}
         const {resource}=await HistoryContainer().item(id(recipient.principal),partition).read<Route>();
-        if(!resource){result.unavailable++;continue;}
+        if(!resource){result.unavailable++;console.info("[teams-canvas] share notification unavailable",{shareId,reason:"bot_conversation_missing"});continue;}
         const age=Date.now()-Date.parse(resource.updatedAt);
         const valid=resource.id===id(recipient.principal)&&resource.userId===partition&&resource.type===partition&&resource.principal===recipient.principal&&resource.email===recipient.email&&resource.botId===botId()&&typeof resource.conversationId==="string"&&resource.conversationId.length>0&&Number.isFinite(age)&&age>=0&&age<90*24*60*60*1000&&/^[a-f0-9]{64}$/.test(resource.seal)&&timingSafeEqual(Buffer.from(resource.seal,"hex"),Buffer.from(seal(resource),"hex"));
-        if(!valid){result.unavailable++;continue;}
+        if(!valid){result.unavailable++;console.info("[teams-canvas] share notification unavailable",{shareId,reason:"bot_conversation_invalid"});continue;}
         const {app}=await (await import("./teams-app")).getTeamsRuntime();
         // The owner's explicitly entered sharing message is sent; no SF report
         // body or financial data is copied into a proactive notification.
@@ -50,8 +51,16 @@ export async function notifyTeamsCanvasShare(shareId:string,message:unknown):Pro
           }}],
         });
         result.sent++;
-      }catch(error){if((error as {code?:number}).code===404)result.unavailable++;else result.failed++;}
+      }catch(error){
+        if((error as {code?:number}).code===404){result.unavailable++;console.info("[teams-canvas] share notification unavailable",{shareId,reason:"bot_conversation_not_found"});}
+        else {
+          result.failed++;
+          const status=(error as {response?:{status?:number};statusCode?:number;status?:number}).response?.status??(error as {statusCode?:number;status?:number}).statusCode??(error as {status?:number}).status;
+          console.warn("[teams-canvas] share notification delivery failed",{shareId,...(typeof status==="number"?{status}:{})});
+        }
+      }
     }
   }catch {result.error="共有は保存しましたが、Teams通知を完了できませんでした。";}
+  console.info("[teams-canvas] share notification result",{shareId,...result});
   return result;
 }

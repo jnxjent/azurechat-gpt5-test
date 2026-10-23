@@ -21,7 +21,8 @@ export function SharedCanvasView({ id,embedded=false }: { id: string;embedded?:b
   const generation = useRef(0), active = useRef<AbortController | null>(null);
   const endpoint = `/api/canvas/shared/${encodeURIComponent(id)}`;
   const sharingSection=useRef<HTMLDetailsElement>(null);
-  function openSharing(){if(sharingSection.current){sharingSection.current.open=true;sharingSection.current.scrollIntoView({block:"start"});}}
+  function openSharing(activate=false){if(activate)setEnabled(true);if(sharingSection.current){sharingSection.current.open=true;sharingSection.current.scrollIntoView({block:"start"});}}
+  function selectReaders(next:string[]){setReaders(next);setEnabled(next.length>0);}
   function showComments(send=false){const section=document.getElementById("comments");section?.scrollIntoView({block:"start"});const input=section?.querySelector("textarea");if(send&&input?.value.trim())section?.querySelector("form")?.requestSubmit();else input?.focus();}
   const load = useCallback(async (force = false) => {
     if (document.hidden || (active.current && !force)) return;
@@ -56,7 +57,8 @@ export function SharedCanvasView({ id,embedded=false }: { id: string;embedded?:b
       const response = await canvasFetch(endpoint, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: report.revision, action, ...(action === "access" ? { readers:selected,permissions:Object.fromEntries(selected.map(email=>[email,(permissions??report.permissions)?.[email]??"view"])), enabled: enabled ?? report.enabled ?? false,message:(enabled??report.enabled)&&notifyTeams?sharingMessage:undefined,notifyTeams } : {}) }) });
       const data = await response.json();
       if (!response.ok) throw Error(data.error || "更新できませんでした。");
-      setReaders(null); setEnabled(null);setPermissions(null);setSharingMessage(""); setNotice((action === "access" ? "共有設定を更新しました。" : "最新データを取得しました。同じURLで表示できます。")+canvasNotificationNotice(data.notifications));
+      setReaders(null); setEnabled(null);setPermissions(null);setSharingMessage("");
+      setNotice(action==="access"?(data.enabled?"共有設定を更新しました。"+(notifyTeams?(canvasNotificationNotice(data.notifications)||"Teams通知の結果を確認できませんでした。"):"Teams通知はオフのため送っていません。"):"共有を無効にしました。Teams通知は送っていません。") : "最新データを取得しました。同じURLで表示できます。");
     } catch (e) { setOperationError(e instanceof Error ? e.message : "更新できませんでした。"); }
     finally { setBusy(false); void load(true); }
   }
@@ -109,7 +111,7 @@ export function SharedCanvasView({ id,embedded=false }: { id: string;embedded?:b
       <button disabled={busy} onClick={()=>void load(true)}>状態を再確認</button>
       <button disabled={!doc||report?.restricted} onClick={()=>showComments()}>コメントを読む</button>
       <button disabled={!report?.canEdit||busy||report?.restricted} onClick={()=>setEditing(true)}>レポートを編集</button>
-      <button disabled={!report?.owner||busy||report?.restricted} onClick={openSharing}>共有</button>
+      <button disabled={!report?.owner||busy||report?.restricted} onClick={()=>openSharing(true)}>共有</button>
       <button disabled={!report?.canComment||busy||report?.restricted} onClick={()=>showComments(true)}>コメントを送信</button>
     </nav>}
     <button type="button" className="underline" onClick={() => { void load(true); }}>表示を再確認</button>
@@ -120,16 +122,16 @@ export function SharedCanvasView({ id,embedded=false }: { id: string;embedded?:b
     {report && <p>最終更新：{new Date(report.updatedAt).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}（日本時間）／版：{report.revision}</p>}
     {report?.restricted && <p role="alert">現在のSalesforce権限を確認できないため、本文は表示していません。共有解除は下の設定から行えます。</p>}
     {report?.owner && <details ref={sharingSection} className="rounded border p-4"><summary className="cursor-pointer font-semibold">共有と更新</summary><section className="mt-3 space-y-3">
-      <CanvasPeoplePicker selected={readers??report.readers??[]} onChange={setReaders} permissions={permissions??report.permissions??{}} onPermissionsChange={setPermissions} disabled={busy}/>
+      <CanvasPeoplePicker selected={readers??report.readers??[]} onChange={selectReaders} permissions={permissions??report.permissions??{}} onPermissionsChange={setPermissions} disabled={busy}/>
       <label className="block text-sm">共有メッセージ（任意）<textarea className="mt-1 block w-full rounded border bg-background p-2" disabled={busy||!notifyTeams} maxLength={4000} value={sharingMessage} onChange={e=>setSharingMessage(e.target.value)}/><span className="text-xs">Teams通知でリンクと一緒に送信します。コメント欄には投稿しません。通知をオフにすると送信しません。</span></label>
-      <label className="flex gap-2"><input type="checkbox" checked={enabled ?? report.enabled ?? false} onChange={e => setEnabled(e.target.checked)} />指定した相手への共有を有効にする</label>
-      <label className="flex gap-2"><input type="checkbox" disabled={busy} checked={notifyTeams} onChange={e=>setNotifyTeams(e.target.checked)}/>Teamsで共有先に通知する</label>
+      <label className="flex gap-2"><input type="checkbox" disabled={busy} checked={notifyTeams} onChange={e=>setNotifyTeams(e.target.checked)}/><span>選択した相手に共有を通知する<small className="block">保存すると、相手とこのBOTのTeamsチャットへリンクを送ります。相手がこのBOTへ一度メッセージを送っている必要があります。送信結果は保存後に下へ表示します。</small></span></label>
       <div className="flex flex-wrap gap-4">
-        <button disabled={busy} type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => { void change("access"); }}>共有設定を保存</button>
+        <button disabled={busy||Boolean(enabled??report.enabled)&&!(readers??report.readers??[]).length} type="button" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => { void change("access"); }}>{busy?"処理中…":"共有設定を保存"}</button>
         <button disabled={busy} type="button" className="rounded border px-3 py-2" onClick={() => { void change("refresh"); }}>{report.savedCanvas?"保存済みCanvasを反映":"SFから内容を更新"}</button>
         <button type="button" className="rounded border px-3 py-2" onClick={() => { void navigator.clipboard.writeText(`${window.location.origin}/canvas/shared/${encodeURIComponent(id)}`).then(() => setNotice("共有URLをコピーしました。Teamsに貼り付けられます。")).catch(() => setError("共有URLをコピーできませんでした。")); }}>共有URLをコピー</button>
       </div>
-      <p className="text-sm">共有を無効にすると、閲覧者の次回アクセス・再確認時に表示を停止します。{report.savedCanvas?"内容の更新では、元のチャットで保存したCanvasを同じURLへ反映します。":"更新は同じ依頼で再検索します。"}</p>
+      {notice&&<p className="rounded border bg-muted p-3">{notice}</p>}{operationError&&<p className="rounded border p-3 text-red-500">{operationError}</p>}
+      <p className="text-sm">共有を解除するには共有先を外して保存してください。閲覧者の次回アクセス・再確認時に表示を停止します。{report.savedCanvas?"内容の更新では、元のチャットで保存したCanvasを同じURLへ反映します。":"更新は同じ依頼で再検索します。"}</p>
       {report.query && <p className="text-sm">取得依頼：{report.query}</p>}
     </section></details>}
     {!embedded&&doc&&report&&!report.restricted&&"canEdit" in report&&report.canEdit&&!editing&&<button className="rounded border px-3 py-2" type="button" disabled={busy} onClick={()=>setEditing(true)}>レポートを編集</button>}
