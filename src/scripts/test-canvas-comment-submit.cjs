@@ -70,7 +70,7 @@ async function main(){
     if(disable)panel.states[6]=false;
     const save=find(renderPanel(),n=>n.type==='button'&&n.props.children==='共有設定を保存');assert.equal(save.props.disabled,false);save.props.onClick();await tick();
     assert.equal(saved.enabled,!disable);assert.equal(saved.notifyTeams,notify);assert.deepEqual(saved.readers,['reader@example.com']);
-    const local=find(renderPanel(),n=>n.type==='p'&&n.props.className==='rounded border bg-muted p-3');assert.ok(local,'result is visible next to the save controls');
+    const local=find(renderPanel(),n=>n.type==='p'&&['rounded','border','bg-muted','p-3'].every(token=>(n.props.className??'').split(/\s+/).includes(token)));assert.ok(local,'result is visible next to the save controls');
     assert.ok(local.props.children.includes(disable?'通知は送っていません':!notify?'オフ':`送信${receipt.sent}件`));
   }
   await sharingScenario();await sharingScenario({receipt:{sent:0,unavailable:1,failed:0}});await sharingScenario({notify:false});await sharingScenario({disable:true});
