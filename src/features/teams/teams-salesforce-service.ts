@@ -66,13 +66,18 @@ async function executeQuery(props: {
   });
 
   let response: Response;
+  const populationEnabled=personal&&process.env.SF_OPPORTUNITY_POPULATION_ENABLED==="true";
+  let population:import("./teams-salesforce-context").TeamsOpportunityContext|undefined;
   try {
     const thread=`teams-${props.conversationId}`;
     if(personal&&(process.env.SF_PERSONAL_AUTH_METHOD!=="oauth"||process.env.SF_PERSONAL_SNAPSHOT_POLICY!=="strict"||url.protocol!=="https:"))throw Error("Personal Salesforce configuration invalid");
+    if(populationEnabled)population=await (await import("./teams-salesforce-context")).readTeamsOpportunityContext(props.actor!,props.conversationId);
     const signed=personal?signSalesforceRequest({principal:props.actor!.salesforcePrincipal!,email:props.userEmail,thread,url},process.env.SF_PERSONAL_SIGNING_KEY??""):{};
     response = await fetch(url, {
       headers: {
         ...signed,
+        ...(populationEnabled?{"X-SF-Opportunity-Population":"v1"}:{}),
+        ...(population?.token?{"X-SF-Opportunity-Context":population.token}:{}),
         "X-User-Email": props.userEmail,
         "X-Chat-Thread-Id": `teams-${props.conversationId}`,
       },cache:"no-store",redirect:"error",signal:AbortSignal.timeout(90000),
@@ -85,7 +90,12 @@ async function executeQuery(props: {
     return "Salesforce Gatewayへ接続できなかったため、Salesforce上の情報を取得できませんでした。しばらくしてから再度お試しください。";
   }
 
-  const data = await response.json().catch(() => null);
+  let data = await response.json().catch(() => null);
+  if(populationEnabled&&population&&response.ok&&data?.ok!==false&&data) {
+    try {await (await import("./teams-salesforce-context")).saveTeamsOpportunityContext(props.actor!,props.conversationId,population,data.population_context);}
+    catch {return "商談の検索対象を保存できませんでした。同時操作を終了してから再度お試しください。";}
+  }
+  if(data&&typeof data==="object") {const {population_context:_privateContext,...display}=data;data=display;}
   const authoritativeText = salesforceReadText(data);
   if (authoritativeText) return authoritativeText;
   if (!response.ok) {

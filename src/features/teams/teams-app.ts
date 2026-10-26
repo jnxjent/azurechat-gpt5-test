@@ -28,7 +28,7 @@ import {
   receiveTeamsFiles,
 } from "./teams-file-service";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
-import { resolveSalesforceRoute } from "@/features/common/services/salesforce-routing";
+import { resolveTeamsSalesforceRoute } from "./teams-salesforce-routing";
 import { handleTeamsDeskNets } from "./teams-desknets-service";
 import { handleTeamsCanvas,createTeamsPersonalCanvas,resolveTeamsCanvasActor,registerTeamsCanvasNotificationConversation,teamsAccountSelectionCard,isTeamsCanvasRequest,isTeamsCanvasSubmission,type CanvasTeamsActivity,type CanvasTeamsApi } from "./teams-canvas-service";
 import {personalSalesforceForEmail} from "@/features/common/services/salesforce-personal";
@@ -252,11 +252,28 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         await recordCompletedTeamsTurn({conversationId, activityId, teamsUserId});
         return;
       }
+      const pendingOfficeReply = await executePendingTeamsOfficeSelection({
+        message: messageText,
+        conversationId,
+      });
+      if (pendingOfficeReply) {
+        await send(pendingOfficeReply);
+        await recordCompletedTeamsTurn({
+          conversationId,
+          activityId,
+          teamsUserId,
+        });
+        return;
+      }
+
       const salesforceAllowed = isSalesforceAllowedEmail(userEmail);
-      const salesforceRouting = resolveSalesforceRoute({
+      const salesforceRouting = await resolveTeamsSalesforceRoute({
         message: messageText,
         isSalesforceAllowed: salesforceAllowed,
         hasSalesforceExtension: isTeamsSalesforceConfigured(),
+        conversationId,
+        actor:verifiedPersonalActor,
+        allowInference:!officeRequest,
       });
       console.log("[SF Route]", {
         channel: "teams",
@@ -294,20 +311,6 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
           ...(actor?{actor,onAccountSelection:async(query,candidates)=>{await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:teamsAccountSelectionCard(actor,conversationId,query,candidates)}]});}}:{}),
         });
         await send(reply);
-        await recordCompletedTeamsTurn({
-          conversationId,
-          activityId,
-          teamsUserId,
-        });
-        return;
-      }
-
-      const pendingOfficeReply = await executePendingTeamsOfficeSelection({
-        message: messageText,
-        conversationId,
-      });
-      if (pendingOfficeReply) {
-        await send(pendingOfficeReply);
         await recordCompletedTeamsTurn({
           conversationId,
           activityId,

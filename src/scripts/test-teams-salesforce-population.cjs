@@ -1,0 +1,47 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),Module=require('node:module');
+const actor={email:'owner@example.invalid',salesforcePrincipal:'11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222'};
+const other={email:'other@example.invalid',salesforcePrincipal:'11111111-1111-1111-1111-111111111111:33333333-3333-3333-3333-333333333333'};
+Object.assign(process.env,{SF_PERSONAL_MODE:'true',SF_PERSONAL_SCOPE:'whitelist',SF_PERSONAL_USERS_JSON:JSON.stringify([actor,other].map(a=>({email:a.email,principal:a.salesforcePrincipal}))),SF_WHITELIST_EMAILS:[actor.email,other.email].join(','),SF_PERSONAL_GATEWAY_BASE_URL:'https://personal.example.invalid',SF_GATEWAY_BASE_URL:'https://shared.example.invalid',SF_PERSONAL_AUTH_METHOD:'oauth',SF_PERSONAL_SNAPSHOT_POLICY:'strict',SF_PERSONAL_SIGNING_KEY:'x'.repeat(40),SF_OPPORTUNITY_POPULATION_ENABLED:'true',TEAMS_BOT_ID:'test-bot'});
+let etag=0,failRead=false,failWrite=false,modelCalls=0,fetches=[],nextBody;
+const rows=new Map(),key=(id,owner)=>JSON.stringify([id,owner]);
+const container={item(id,owner){return {async read(){if(failRead)throw Error('offline');const row=rows.get(key(id,owner));if(!row)throw {code:404};return {resource:structuredClone(row)};},async replace(row,options){if(failWrite)throw {code:412};const prior=rows.get(key(id,owner));if(!prior||prior._etag!==options.accessCondition.condition)throw {code:412};rows.set(key(id,owner),{...structuredClone(row),_etag:String(++etag)});}};},items:{async create(row){if(failWrite)throw {code:409};const k=key(row.id,row.userId);if(rows.has(k))throw {code:409};rows.set(k,{...structuredClone(row),_etag:String(++etag)});}}};
+const cache=new Map();
+function load(relative){const file=path.resolve(__dirname,'..',relative);if(cache.has(file))return cache.get(file);const mod=new Module(file);mod.filename=file;mod.paths=Module._nodeModulePaths(path.dirname(file));mod.require=name=>{
+ if(name==='server-only')return {};
+ if(name==='@/features/common/services/cosmos')return {HistoryContainer:()=>container};
+ if(name==='@/features/common/services/openai')return {OpenAIInstance:()=>({chat:{completions:{create:async()=>{modelCalls++;return {choices:[{message:{content:'summary'}}]};}}}})};
+ if(name.startsWith('@/'))return load(name.slice(2)+'.ts');
+ if(name.startsWith('./'))return load(path.relative(path.resolve(__dirname,'..'),path.resolve(path.dirname(file),name+'.ts')));
+ return require(name);
+ };mod._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,file);cache.set(file,mod.exports);return mod.exports;}
+global.fetch=async(url,options)=>{fetches.push({url:new URL(url),options});return new Response(JSON.stringify(nextBody),{status:200,headers:{'Content-Type':'application/json','X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':actor.salesforcePrincipal,'X-SF-User-Id':'005000000000000AAA','X-SF-Org-Id':'00D000000000000AAA'}});};
+const context=load('features/teams/teams-salesforce-context.ts'),routing=load('features/teams/teams-salesforce-routing.ts'),sf=load('features/teams/teams-salesforce-service.ts');
+const route=message=>routing.resolveTeamsSalesforceRoute({message,isSalesforceAllowed:true,hasSalesforceExtension:true,conversationId:'A',actor});
+let activity=0;const query=message=>sf.queryTeamsSalesforce({message,userEmail:actor.email,conversationId:'A',activityId:String(++activity),actor});
+const body=(token,text)=>({ok:true,status:'opportunity_population',population_context:token,population_text:text,items:[]});
+(async()=>{
+ for(const q of ['J&T環境㈱の進行中の商談を出してください。','J&T環境㈱の進行中の案件の成約した商談を出してください。','失注の案件を出してください','私の部下の日報を一覧にして','取引先の件数を教えて'])assert.equal((await route(q)).route,'salesforce',q);
+ for(const q of ['商談とは何ですか','案件管理のコツを教えて','失注メールの例文を書いて','SharePointの商談資料を検索して','添付の案件一覧を翻訳して','今日は晴れますか'])assert.notEqual((await route(q)).route,'salesforce',q);
+ assert.equal((await route('22')).route,'normal');assert.equal((await route('成約は？')).route,'normal');
+ const empty=await context.readTeamsOpportunityContext(actor,'A');assert.equal(empty.token,undefined);
+ nextBody=body('signed-open','母集団31／進行中10件');assert.equal(await query('J&T環境㈱の進行中の商談を出してください。'),nextBody.population_text);
+ assert.equal(fetches.at(-1).options.headers['X-SF-Opportunity-Population'],'v1');assert.equal(fetches.at(-1).url.host,'personal.example.invalid');
+ for(const q of ['成約は？','失注','同社の失注','22','1番と3番','ソリューション営業室だけ','全体に戻して'])assert.equal((await route(q)).route,'salesforce',q);
+ nextBody=body('signed-won','母集団31／成約19件');assert.equal(await query('J&T環境㈱の進行中の案件の成約した商談を出してください。'),nextBody.population_text);assert.equal(fetches.at(-1).options.headers['X-SF-Opportunity-Context'],'signed-open');
+ nextBody=body('signed-lost','母集団31／失注8件');assert.equal(await query('失注の案件を出してください'),nextBody.population_text);assert.equal(fetches.at(-1).options.headers['X-SF-Opportunity-Context'],'signed-won');
+ nextBody=body('signed-one','対象1');await query('22');assert.equal(fetches.at(-1).url.searchParams.get('q'),'22');
+ nextBody=body('signed-all','対象31');await query('全体に戻して');assert.equal(fetches.at(-1).options.headers['X-SF-Opportunity-Context'],'signed-one');assert.equal(modelCalls,0,'authoritative population text bypasses summary model');
+ const persisted=await context.readTeamsOpportunityContext(actor,'A');assert.equal(persisted.token,'signed-all');assert.equal((await context.readTeamsOpportunityContext(actor,'B')).token,undefined);assert.equal((await context.readTeamsOpportunityContext(other,'A')).token,undefined);
+ process.env.TEAMS_BOT_ID='other-bot';assert.equal((await context.readTeamsOpportunityContext(actor,'A')).token,undefined);process.env.TEAMS_BOT_ID='test-bot';
+ await assert.rejects(()=>context.saveTeamsOpportunityContext(other,'A',persisted,'stolen'));await assert.rejects(()=>context.saveTeamsOpportunityContext(actor,'A',persisted,'x'.repeat(7501)));
+ const row=rows.get(key(persisted.id,persisted.owner));assert.equal(row.ttl,1800);row.expiresAt=Date.now()-1;assert.equal((await route('22')).route,'normal');row.expiresAt=Date.now()+1800000;
+ failWrite=true;nextBody=body('new','must not display');assert.match(await query('失注'),/保存できません/);failWrite=false;
+ const calls=fetches.length;failRead=true;assert.match(await query('失注の案件'),/取得できません/);assert.equal(fetches.length,calls);failRead=false;
+ assert.match(await sf.queryTeamsSalesforce({message:'商談一覧',userEmail:actor.email,conversationId:'A',activityId:'spoof',actor:other}),/本人対応/);assert.equal(fetches.length,calls);
+ nextBody={ok:true,status:'conversation'};await query('ありがとう');assert.equal((await context.readTeamsOpportunityContext(actor,'A')).token,undefined);
+ const stale=await context.readTeamsOpportunityContext(actor,'A');await context.saveTeamsOpportunityContext(actor,'A',stale,'fresh');await assert.rejects(()=>context.saveTeamsOpportunityContext(actor,'A',stale,'stale'),e=>e.code===412);
+ const denied=await routing.resolveTeamsSalesforceRoute({message:'失注の商談を出して',isSalesforceAllowed:false,hasSalesforceExtension:true,conversationId:'A',actor});assert.equal(denied.route,'denied');
+ const office=await routing.resolveTeamsSalesforceRoute({message:'22',isSalesforceAllowed:true,hasSalesforceExtension:true,conversationId:'A',actor,allowInference:false});assert.equal(office.route,'normal');
+ process.env.SF_OPPORTUNITY_POPULATION_ENABLED='false';assert.equal((await route('22')).route,'normal');
+ console.log('PASS Teams: prefix-free routing, persisted population, phase/number/branch/all follow-ups, authoritative output, identity/bot/conversation isolation, expiry, conflicts, failures and access denial');
+})().catch(error=>{console.error(error);process.exitCode=1;});

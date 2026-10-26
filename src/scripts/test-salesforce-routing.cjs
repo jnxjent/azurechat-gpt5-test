@@ -214,7 +214,6 @@ assert.match(
   /salesforceRouting\.route === "salesforce"/
 );
 assert.match(webExtensionSource, /salesforceRouting\.route === "denied"/);
-assert.match(teamsSource, /resolveSalesforceRoute\(/);
 assert.match(teamsSource, /salesforceRouting\.route === "salesforce"/);
 assert.match(
   teamsSource,

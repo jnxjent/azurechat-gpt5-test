@@ -19,6 +19,8 @@ export interface SalesforceRoutingInput {
    * Salesforce merely because the integration is configured.
    */
   defaultToSalesforce?: boolean;
+  /** Opt-in for channels without a dedicated Salesforce chat. */
+  inferFromContent?: boolean;
 }
 
 export interface SalesforceRoutingResult {
@@ -123,6 +125,7 @@ export function resolveSalesforceRoute(
 
   const shouldUseSalesforce =
     intent === "salesforce_data" ||
+    (input.inferFromContent === true && isSalesforceRecordRequest(input.message)) ||
     (input.defaultToSalesforce === true && input.hasSalesforceExtension);
 
   if (shouldUseSalesforce && !input.isSalesforceAllowed) {
@@ -142,6 +145,17 @@ export function resolveSalesforceRoute(
 
 const EXPLICIT_SALESFORCE_OBJECT_PATTERN =
   /(?:取引先|顧客|商談|案件|日報|活動報告|売上|担当者|責任者|連絡先|住所|所在地|電話|メール|与信|請求|レコード|Account|Opportunity|Contact)/i;
+
+/** Business-record retrieval, not definitions, writing advice or file editing. */
+export function isSalesforceRecordRequest(message:string):boolean {
+  const text=normalizeMessage(message);
+  if(SALESFORCE_KNOWLEDGE_PATTERN.test(text)||/とは|って何|意味|定義|コツ|一般論|例文|書き方|テンプレート/.test(text))return false;
+  if(/添付|SharePoint|シェアポイント|\bSL\b/i.test(text)||/(?:Word|Excel|PowerPoint|PPT|PDF|ファイル|資料|文書).*(?:編集|翻訳|変換|作成|要約|まとめ)/i.test(text))return false;
+  const retrieval=SALESFORCE_DATA_ACTION_PATTERN.test(text)||/は[?？]?\s*$/.test(text);
+  if(/商談|案件/.test(text))return retrieval||/進行中|成約|受注|失注/.test(text);
+  if(/取引先|顧客|日報|活動報告/.test(text))return retrieval;
+  return /売上|連絡先|与信|請求/.test(text)&&retrieval&&/私の|当社|部下|取引先|顧客|株式会社|㈱|営業所|営業部/.test(text);
+}
 const COMPANY_NAME_SUFFIX_PATTERN =
   /(?:株式会社|有限会社|合同会社|ホールディングス|産業|工業|建設|商事|興産|製作所|運輸|物流|銀行|信用金庫|病院|大学)$/;
 

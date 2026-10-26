@@ -55,6 +55,7 @@ jobs:
           SF_PERSONAL_AUTH_METHOD=oauth node scripts/test-salesforce-history-access.cjs
           node scripts/test-canvas-report-format.cjs
           node scripts/test-teams-sf-image-fixes.cjs
+          node scripts/test-teams-salesforce-population.cjs
           node scripts/test-image-upload-routing.cjs
           node scripts/test-teams-desknets.cjs
           DISABLE_SYSTEM_FONTS_LOAD=1 node scripts/test-ppt-output-regression.cjs
