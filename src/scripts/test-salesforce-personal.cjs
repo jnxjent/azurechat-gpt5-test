@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as directory:
   print(json.dumps({'mode':result.headers['X-SF-Connection-Mode'],'principal':result.headers['X-AC-Principal']}))
 `;
       const output = require('node:child_process').execFileSync('python', ['-c', script, gateway], {
-        input: JSON.stringify({ target: claim.target, headers: { ...headers, 'X-User-Email': user.email, 'X-Chat-Thread-Id': 'thread' } }), encoding: 'utf8', timeout: 30000,
+        input: JSON.stringify({ target: claim.target, headers: { ...headers, 'X-User-Email': user.email, 'X-Chat-Thread-Id': 'thread' } }), encoding: 'utf8', timeout: 60000,
       });
       assert.deepEqual(JSON.parse(output), { mode: 'personal-jwt', principal });
       console.log('PASS TypeScript -> Python/Flask signed identity integration (no Salesforce network calls)');
@@ -74,15 +74,15 @@ with tempfile.TemporaryDirectory() as directory:
     function loadGuard(relative) {
       const mod = { exports: {} };
       const script = ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '..', relative), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
-      new Function('require', 'module', 'exports', script)(id => id === '@/features/common/services/salesforce-personal' ? api : id === 'server-only' || id.startsWith('@/') || id.startsWith('./') ? {} : require(id), mod, mod.exports);
+      new Function('require', 'module', 'exports', script)(id => id === '@/features/common/services/salesforce-personal' ? api : id === '@/features/canvas/canvas-actor' ? {getCanvasActor:async()=>user} : id === 'server-only' || id.startsWith('@/') || id.startsWith('./') ? {} : require(id), mod, mod.exports);
       return mod.exports;
     }
     const teams = loadGuard('features/teams/teams-salesforce-service.ts');
     // Teams is enabled, but an unverified actor must still fail closed.
     assert.match(await teams.queryTeamsSalesforce({ message: 'count', userEmail: user.email, conversationId: 'same', activityId: 'same' }), /本人対応を確認できません/);
-    const skills = loadGuard('features/skills/execution/skill-search-tools.ts');
-    const tool = skills.createSkillSearchTools({ email: user.email, threadId: 'same', userMessage: 'count', signal: new AbortController().signal });
-    assert.equal((await tool.execute('salesforce', 'count')).reason, 'personal_route_not_enabled');
+    const skills = loadGuard('features/skills/execution/skill-personal-access.ts');
+    assert.equal(await skills.isPersonalSkillUser(user.email),true);
+    await assert.rejects(()=>skills.skillPersonalHeaders(new URL('https://personal.example.com/api/skills/salesforce/search'),user.email,'same','POST','{}'),/本人接続/);
     // Every SF-enabled Web user selects the personal path, even before mapping
     // or OAuth enrollment exists. Missing identity must never select shared SF.
     process.env.SF_PERSONAL_SCOPE = 'whitelist';

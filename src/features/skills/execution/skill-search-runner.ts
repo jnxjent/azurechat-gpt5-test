@@ -1,3 +1,4 @@
+import { isPersonalSkillUser } from "./skill-personal-access";
 import "server-only";
 import { OpenAIInstance } from "@/features/common/services/openai";
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
@@ -18,7 +19,8 @@ const tools: ChatCompletionTool[] = sources.map(source => ({ type: "function", f
   parameters: { type: "object", properties: { query: { type: "string", maxLength: 600 }, ...(source === "salesforce" ? { companyName: { type: "string", description: "会社を調べる場合、今回の依頼にある会社名を検索文とは別にそのまま指定する。", maxLength: 120 }, operation: { type: "string", enum: ["accounts", "opportunities", "activities", "sales"], description: "accounts=取引先、opportunities=商談、activities=Task/Event活動。1種類ずつ指定。選択済みAccount IDはサーバーで付与される。会社指定のない商談/活動は本人所有を取得する。" } } : {}) }, required: ["query"], additionalProperties: false },
 } }));
 
-export async function runSkillSearch(props: { chatThread: ChatThreadModel; skills: UserSkill[]; message: string; history: ChatCompletionMessageParam[]; email: string; signal: AbortSignal; selectedAccount?: SelectedSearchAccount; originalRequest?: string; selectedAccountRecord?: Record<string, unknown> }) {
+export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, "id">; skills: UserSkill[]; message: string; history: ChatCompletionMessageParam[]; email: string; signal: AbortSignal; selectedAccount?: SelectedSearchAccount; originalRequest?: string; selectedAccountRecord?: Record<string, unknown>; documentSearch?: (query: string) => Promise<import("./skill-search-policy").SkillSearchResult> }) {
+  const personal = await isPersonalSkillUser(props.email);
   const client = OpenAIInstance();
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -31,9 +33,10 @@ export async function runSkillSearch(props: { chatThread: ChatThreadModel; skill
   const latestPeriod = readFiscalPeriod(props.message);
   if (latestPeriod) requirements.fiscalPeriod = latestPeriod;
   const coverage: Array<{ operation: string; status: string; reason?: string; count?: number; truncated?: boolean; queryCount?: number }> = [];
-  const search = createSkillSearchTools({ email: props.email, threadId: props.chatThread.id, signal: controller.signal, userMessage: props.originalRequest ?? props.message, selectedAccount: props.selectedAccount, selectedAccountRecord: props.selectedAccountRecord, fiscalPeriod: requirements.fiscalPeriod });
+  const search = createSkillSearchTools({ email: props.email, threadId: props.chatThread.id, signal: controller.signal, userMessage: props.originalRequest ?? props.message, selectedAccount: props.selectedAccount, selectedAccountRecord: props.selectedAccountRecord, fiscalPeriod: requirements.fiscalPeriod, documentSearch: props.documentSearch });
+  let selectedAccount = props.selectedAccount;
   const model = process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME?.trim() || "gpt-5";
-  const selectedRecord = props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) ? props.selectedAccountRecord : undefined;
+  const selectedRecord = !personal && props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) ? props.selectedAccountRecord : undefined;
   const selectedRecordContext = selectedRecord ? "選択したAccountの取得済みデータ（直前10分以内の候補検索の結果。基本情報の二重検索は不要。後続の再検索に失敗しても、このデータまで未取得と扱わず、存在する項目は回答に使用する。欠けている項目は補わない）:\n" + JSON.stringify(selectedRecord) : "";
   const messages: ChatCompletionMessageParam[] = [{ role: "system", content: [
     "あなたは営業員向けの読み取り専用情報検索アシスタントです。現在日付(JST): " + new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(new Date()),
@@ -45,7 +48,7 @@ export async function runSkillSearch(props: { chatThread: ChatThreadModel; skill
     '回答には取得元リンクを付ける。社内資料の引用は {% citation items=[{name:"ファイル名",id:"返された引用ID"}] /%} の形式のみを使う。引用の引用符の前にバックスラッシュを出力しない。SalesforceとWebは実際に取得したリンクだけを使う。',
     "回答末尾に次の参照表示をそのまま付ける: " + skillReferenceLabel(props.skills),
     "最大8検索、6ラウンド。検索を繰り返しても情報が足りなければ取得範囲と不足を説明する。",
-    '取引先候補の選択を求める場合、候補を必ず「1. 取引先名 — [Salesforceで確認](取得したAccountリンク)」形式で表示する。',
+    '取引先候補には実際に取得したリンクだけを付ける。公開情報の候補にSalesforceリンクや未取得のプレースホルダーを付けない。',
     props.selectedAccount ? "利用者が直前の候補から選択した取引先（選択を再確認せず元の依頼を続行する）: " + JSON.stringify(props.selectedAccount) + "\n元の依頼: " + props.originalRequest : "",
     selectedRecordContext,
     SKILL_RESULT_PRESENTATION,
@@ -63,13 +66,31 @@ export async function runSkillSearch(props: { chatThread: ChatThreadModel; skill
       const discovery = await search.execute("salesforce", buildAccountCandidateQuery(company), company, "accounts");
       messages.push({ role: "system", content: "サーバーが実行した事前の取引先候補検索結果です。needs_confirmationなら候補を番号付きで示して利用者に選択を求め、それ以上検索しないでください。検索結果:\n" + JSON.stringify(discovery) });
       confirmationPending = discovery.status === "needs_confirmation";
+      if (discovery.status === "ok" && !discovery.truncated && Array.isArray(discovery.data) && discovery.data.length === 1) {
+        const record = discovery.data[0] as Record<string, unknown>;
+        if (/^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(String(record.Id)) && typeof record.Name === "string") {
+          selectedAccount = {id:String(record.Id),name:record.Name};
+          search.selectAccount(selectedAccount);
+          messages.push({role:"system",content:"本人権限で特定した取引先。以後の検索はサーバーでこのIDに限定する: "+JSON.stringify(selectedAccount)});
+        }
+      }
       if (confirmationPending) {
         const directContent = formatAccountCandidates(discovery, skillReferenceLabel(props.skills));
         cleanup();
-        return { runner: undefined, directContent, citationResults: [...search.contextResults] };
+        return { runner: undefined, directContent, citationResults: [...search.contextResults], salesforceSnapshot: search.salesforceSnapshot };
       }
     }
-    if (props.selectedAccount && !confirmationPending) {
+    // A single verified discovery result is sufficient to continue without another user turn.
+    // Account choices from stored history are always fetched again in personal mode.
+    if (props.selectedAccount && personal) {
+      const current = await search.execute("salesforce", "Account基本情報", undefined, "accounts");
+      if (current.status !== "ok") {
+        cleanup();
+        return { runner: undefined, directContent: "選択した取引先の現在の閲覧権限を確認できませんでした。改めて会社名から検索してください。", citationResults: [], salesforceSnapshot: search.salesforceSnapshot };
+      }
+      messages.push({role:"system",content:"選択した取引先を本人権限で再取得した結果:\n"+JSON.stringify(current)});
+    }
+    if (selectedAccount && !confirmationPending) {
       for (const operation of requirements.operations) {
         if (Date.now() >= searchDeadline || controller.signal.aborted) break;
         const label = { accounts: "Account基本情報", opportunities: "商談を金額降順で上位10件", activities: "活動履歴を日付降順で最新10件", sales: "Sales__cの請求先照合・売上集計と直近売上" }[operation] ?? operation;
@@ -102,14 +123,14 @@ export async function runSkillSearch(props: { chatThread: ChatThreadModel; skill
         const exactText = (result as {authoritativeText?: string}).authoritativeText;
         if (source === "salesforce" && exactText) {
           cleanup();
-          return { runner: undefined, directContent: exactText + "\n\n" + skillReferenceLabel(props.skills), citationResults: [...search.contextResults] };
+          return { runner: undefined, directContent: exactText + "\n\n" + skillReferenceLabel(props.skills), citationResults: [...search.contextResults], salesforceSnapshot: search.salesforceSnapshot };
         }
         if ((result as {status?: string}).status === "needs_confirmation") {
           needsConfirmation = true;
           if (source === "salesforce") {
             const directContent = formatAccountCandidates(result as import("./skill-search-policy").SkillSearchResult, skillReferenceLabel(props.skills));
             cleanup();
-            return { runner: undefined, directContent, citationResults: [...search.contextResults] };
+            return { runner: undefined, directContent, citationResults: [...search.contextResults], salesforceSnapshot: search.salesforceSnapshot };
           }
         }
       }
@@ -121,8 +142,9 @@ export async function runSkillSearch(props: { chatThread: ChatThreadModel; skill
     runner.on("end", cleanup);
     runner.on("error", cleanup);
     runner.on("abort", cleanup);
-    const pendingFiscal = props.selectedAccount && requirements.operations.includes("sales") && props.skills.length === 1
-      ? [JSON.stringify({ integration: requirements.fiscalPeriod ? "skill_search_fiscal_complete" : "skill_search_fiscal_pending", observedAt: new Date().toISOString(), skillName: props.skills[0].title, account: props.selectedAccount, originalRequest: props.originalRequest ?? props.message })] : [];
-    return { runner, directContent: undefined, citationResults: [...search.citationResults, ...search.contextResults, ...pendingFiscal] };
+    selectedAccount = search.selectedAccount ?? selectedAccount;
+    const pendingFiscal = selectedAccount && requirements.operations.includes("sales") && props.skills.length === 1
+      ? [JSON.stringify({ integration: requirements.fiscalPeriod ? "skill_search_fiscal_complete" : "skill_search_fiscal_pending", observedAt: new Date().toISOString(), skillName: props.skills[0].title, account: selectedAccount, originalRequest: props.originalRequest ?? props.message })] : [];
+    return { runner, salesforceSnapshot: search.salesforceSnapshot, directContent: undefined, citationResults: [...search.citationResults, ...search.contextResults, ...pendingFiscal] };
   } catch (error) { cleanup(); throw error; }
 }

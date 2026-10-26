@@ -1,4 +1,5 @@
 "use server";
+import { mergeSkillSnapshots } from "@/features/skills/execution/skill-personal-access";
 import type { ChatMessageModel } from "../models";
 import { isPersonalSalesforceUser } from "@/features/common/services/salesforce-personal";
 // src/features/chat-page/chat-services/chat-api/chat-api.ts
@@ -151,14 +152,14 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
     const choiceMessages = skillChoice ? await FindTopChatMessagesForCurrentUser(currentChatThread.id, 20) : undefined;
     const selectedAccountRecord = skillChoice && choiceMessages?.status === "OK" ? readSelectedAccountSnapshot(choiceMessages.response, skillChoice.account.id) : undefined;
     await CreateChatMessage({ name: user.name, content: props.message, role: "user", chatThreadId: currentChatThread.id });
-    const { runner, directContent, citationResults } = await runSkillSearch({ chatThread: currentChatThread, skills: selectedSkills, message: props.message, history, email: user.email, signal, selectedAccount: skillChoice?.account, originalRequest: skillChoice?.originalRequest, selectedAccountRecord });
+    const { runner, directContent, citationResults, salesforceSnapshot } = await runSkillSearch({ chatThread: currentChatThread, skills: selectedSkills, message: props.message, history, email: user.email, signal, selectedAccount: skillChoice?.account, originalRequest: skillChoice?.originalRequest, selectedAccountRecord });
     if (directContent) {
-      for (const content of citationResults) await CreateChatMessage({ name: AI_NAME, content, salesforceSnapshot: historySource(history), role: "tool", chatThreadId: currentChatThread.id });
-      await CreateChatMessage({ name: AI_NAME, content: directContent, salesforceSnapshot: historySource(history), role: "assistant", chatThreadId: currentChatThread.id });
+      for (const content of citationResults) await CreateChatMessage({ name: AI_NAME, content, salesforceSnapshot: mergeSkillSnapshots(historySource(history), salesforceSnapshot), role: "tool", chatThreadId: currentChatThread.id });
+      await CreateChatMessage({ name: AI_NAME, content: directContent, salesforceSnapshot: mergeSkillSnapshots(historySource(history), salesforceSnapshot), role: "assistant", chatThreadId: currentChatThread.id });
       return new Response(`event: finalContent\ndata: ${JSON.stringify({ type: "finalContent", response: directContent })}\n\n`, { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" } });
     }
     if (!runner) throw new Error("Skill search response missing");
-    return new Response(OpenAIStream({ runner, historySnapshot: historySource(history), initialToolResults: citationResults, chatThread: currentChatThread, memoryReference: skillReferenceLabel(selectedSkills) }), {
+    return new Response(OpenAIStream({ runner, historySnapshot: mergeSkillSnapshots(historySource(history), salesforceSnapshot), initialToolResults: citationResults, chatThread: currentChatThread, memoryReference: skillReferenceLabel(selectedSkills) }), {
       headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
     });
   }

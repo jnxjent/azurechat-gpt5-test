@@ -1,4 +1,5 @@
-import { personalSalesforceForEmail } from "@/features/common/services/salesforce-personal";
+import { isPersonalSkillUser, skillPersonalHeaders, mergeSkillSnapshots, type SkillSnapshot } from "./skill-personal-access";
+import { personalSalesforceBase, assertPersonalSalesforceResponse, personalSalesforceForEmail } from "@/features/common/services/salesforce-personal";
 import "server-only";
 import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
@@ -15,17 +16,20 @@ import { buildAccountCandidateQuery, companyForLookup, hasInvalidCompanyFilter, 
 import type { SelectedSearchAccount } from "./skill-search-continuation";
 import type { FiscalPeriod } from "./skill-search-requirements";
 
-export function createSkillSearchTools(props: { email: string; threadId: string; signal: AbortSignal; userMessage: string; selectedAccount?: SelectedSearchAccount; selectedAccountRecord?: Record<string, unknown>; fiscalPeriod?: FiscalPeriod }) {
+export function createSkillSearchTools(props: { email: string; threadId: string; signal: AbortSignal; userMessage: string; selectedAccount?: SelectedSearchAccount; selectedAccountRecord?: Record<string, unknown>; fiscalPeriod?: FiscalPeriod; documentSearch?: (query: string) => Promise<SkillSearchResult> }) {
+  props = { ...props }; // Selection state belongs to this execution, never the caller's input.
   let calls = 0;
+  let personal = personalSalesforceForEmail(props.email);
+  let salesforceSnapshot: SkillSnapshot;
   const citationResults: string[] = [];
   const contextResults: string[] = [];
   const trace: Array<{ source: SearchSource; status: string; truncated?: boolean }> = [];
   async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown): Promise<SkillSearchResult> {
-    if (source === "salesforce" && personalSalesforceForEmail(props.email)) return { source, status: "unavailable", reason: "personal_route_not_enabled", message: "本人別Salesforce接続はWebの通常検索で検証中です。Skill経由の検索は停止しています。" };
     const started = Date.now();
     let result: SkillSearchResult;
     try {
       if (props.signal.aborted) throw new Error("aborted");
+      if (source === "salesforce") personal = await isPersonalSkillUser(props.email);
       if (++calls > SKILL_SEARCH_LIMITS.calls) result = { source, status: "limit", message: "検索回数上限です。取得済みの結果で回答してください。" };
       else {
         const query = validateSearchQuery(input);
@@ -47,39 +51,56 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       if (markup) citationResults.push(markup);
     }
     trace.push({ source, status: result.status, ...(result.truncated ? { truncated: true } : {}) });
-    console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
+    console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? personal ? "personal" : process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
     return result;
   }
   async function search(source: SearchSource, query: string, suppliedCompany?: unknown, suppliedOperation?: unknown): Promise<SkillSearchResult> {
     if (source === "salesforce") {
       if (!isSalesforceAllowedEmail(props.email)) return { source, status: "denied", reason: "sf_whitelist_denied", message: "Salesforce参照権限がありません。" };
-      if (props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) && (!suppliedOperation || suppliedOperation === "accounts") && isCompanyLookup(query)) {
+      if (!personal && props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) && (!suppliedOperation || suppliedOperation === "accounts") && isCompanyLookup(query)) {
         return { source, status: "ok", reason: "selected_account_snapshot", data: [props.selectedAccountRecord], message: "利用者が直前の検索結果から選んだAccountの取得済みデータです（候補提示時点のスナップショット）。同名の別Accountを混ぜず、このレコードの値を使用してください。" };
       }
       // Typed account/sales operations do not implement natural-language COUNT.
       // Route that migration boundary to the strict NL read-plan endpoint.
-      const typedBase = /件数|レコードの数|ユーザ.*数|何件|何人|何名|カウント|そのうち|その中で/.test(query) ? undefined : process.env.SF_SKILL_READ_BASE_URL;
+      const countQuery = /件数|レコードの数|ユーザ.*数|何件|何人|何名|カウント|そのうち|その中で/.test(query);
+      const typedBase = personal && suppliedOperation === "sales" ? personalSalesforceBase() : countQuery ? undefined : personal ? personalSalesforceBase() : process.env.SF_SKILL_READ_BASE_URL;
       if (suppliedOperation === "sales" && !typedBase) return { source, status: "unavailable", reason: "typed_sales_required", message: "売上の請求先照合と年度集計には構造化読み取りGatewayが必要です。従来の自然言語検索では代替しません。" };
-      const base = typedBase || process.env.SF_GATEWAY_BASE_URL;
+      const base = personal ? personalSalesforceBase() : typedBase || process.env.SF_GATEWAY_BASE_URL;
       if (!base) return { source, status: "unavailable", reason: "gateway_not_configured", message: "Salesforce Gateway未設定です。" };
-      if (typedBase && !process.env.SF_SKILL_READ_KEY) return { source, status: "unavailable", reason: "gateway_key_missing" };
+      if (typedBase && !personal && !process.env.SF_SKILL_READ_KEY) return { source, status: "unavailable", reason: "gateway_key_missing" };
       const url = new URL(typedBase ? "/api/skills/salesforce/search" : "/api/sf/query_nl", base);
       if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) {
         return { source, status: "unavailable", reason: "invalid_gateway_url", message: "Gatewayの接続設定を確認してください。" };
       }
       url.searchParams.set("engine", "auto"); url.searchParams.set("mode", "real");
-      const request = (text: string) => {
+      const verifiedResponse = async (response: Response, signed: Record<string, string>) => {
+        if (personal && response.ok) {
+          assertPersonalSalesforceResponse(response, signed);
+          const data = await response.clone().json();
+          salesforceSnapshot = mergeSkillSnapshots(salesforceSnapshot, {
+            orgId: response.headers.get("X-SF-Org-Id")!, userId: response.headers.get("X-SF-User-Id")!,
+            retrievedAt: new Date().toISOString(), proof: typeof data.snapshot_proof === "string" && data.snapshot_proof.length <= 12100 ? data.snapshot_proof : undefined,
+          });
+        }
+        return response;
+      };
+      const request = async (text: string) => {
         const target = new URL(url);
         if (typedBase) {
-          if (!process.env.SF_SKILL_READ_KEY) throw new Error("Skill read key missing");
+          if (!personal && !process.env.SF_SKILL_READ_KEY) throw new Error("Skill read key missing");
           const company = companyForLookup(props.userMessage, suppliedCompany);
           let operation = ["accounts", "opportunities", "activities", "sales"].includes(String(suppliedOperation)) ? String(suppliedOperation) : /商談|Opportunity/i.test(text) ? "opportunities" : /活動履歴|活動一覧|Task|Event/i.test(text) ? "activities" : /Sales__c|売上|受注合計/i.test(text) ? "sales" : "accounts";
           if (company && !props.selectedAccount) operation = "accounts";
-          return fetch(target, { method: "POST", signal: props.signal, headers: { "Content-Type": "application/json", "X-User-Email": props.email, "X-Skill-Read-Key": process.env.SF_SKILL_READ_KEY }, body: JSON.stringify({ operation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(operation === "sales" ? props.fiscalPeriod : {}) }) });
+          const body = JSON.stringify({ operation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(operation === "sales" ? props.fiscalPeriod : {}) });
+          const signed = personal ? await skillPersonalHeaders(target, props.email, props.threadId, "POST", body) : {};
+          const response = await fetch(target, { method: "POST", signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "Content-Type": "application/json", "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId, ...(!personal ? {"X-Skill-Read-Key": process.env.SF_SKILL_READ_KEY!} : {}) }, body });
+          return verifiedResponse(response, signed);
         }
         target.searchParams.set("q", buildSalesforceGatewayQuery(text));
         if (props.selectedAccount) target.searchParams.set("account_id", props.selectedAccount.id);
-        return fetch(target, { signal: props.signal, headers: { "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId } });
+        const signed = personal ? await skillPersonalHeaders(target, props.email, props.threadId, "GET", "") : {};
+        const response = await fetch(target, { signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId } });
+        return verifiedResponse(response, signed);
       };
       const response = await request(query);
       if (!response.ok) {
@@ -152,6 +173,9 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         contextResults.push(JSON.stringify(snapshot));
         return { source, status: "needs_confirmation", truncated: Boolean(body.truncated) || snapshot.records.length < body.items.length, data: snapshot.records.map((item: Record<string, unknown>) => ({ Id: item.Id, Name: item.Name, lightning_url: item.lightning_url, BillingPostalCode: item.BillingPostalCode, BillingCountry: item.BillingCountry, BillingState: item.BillingState, BillingCity: item.BillingCity, BillingStreet: item.BillingStreet, OwnerName: item.OwnerName })), message: `会社名に対応する取引先候補が複数あります（総件数 ${body.total_count ?? body.items.length}、候補提示 ${snapshot.records.length}）。この候補は0件ではありません。候補の名前とIDを示し、対象の取引先を利用者に確認してください。別工場・部署の商談を勝手に混ぜないでください。` };
       }
+      if (personal && !props.selectedAccount && lookup && body.object === "Account" && !body.truncated && body.items.length === 1 && /^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(body.items[0].Id)) {
+        props.selectedAccount = {id:body.items[0].Id,name:body.items[0].Name};
+      }
       return { source, status: body.items.length ? "ok" : "empty", reason: excludedCount ? "partial_verified_results" : "query_completed", queryCount: typeof body.query_count === "number" ? body.query_count : undefined, excludedCount, data: body.items, ...(body.truncated ? { truncated: true } : {}), message: JSON.stringify({ ...salesforceReadMetadata(body), instruction: salesforceReadInstruction, object: body.object ?? "不明", contract: body.contract, notices: body.notices, appliedFilters: body.applied_filters, order: body.order, limits: body.limits, displayHint: body.display_hint ?? "不明", resolvedAccountName: body.resolved_account_name ?? null, returnedCount: body.items.length, totalCount: body.total_count ?? null, excludedCount, guidance: "一致を検証できない行を除外している場合は除外件数を明示する。OwnerNameは社内の担当営業。上限取得や除外後の一部を全件集計に使わない。指定期間等が実際の適用条件にない場合はその制限も明示する。" }) };
     }
     if (source === "web") {
@@ -166,6 +190,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         throw error;
       }
     }
+    if (props.documentSearch) return props.documentSearch(query);
     const apiKey = process.env.AZURE_SEARCH_API_KEY, searchName = process.env.AZURE_SEARCH_NAME, indexName = process.env.AZURE_SEARCH_INDEX_NAME;
     if (!apiKey || !searchName || !indexName) return { source, status: "unavailable", message: "社内資料検索未設定です。" };
     const context = await resolveUserContext();
@@ -182,5 +207,5 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
     if (result.response.length && !data.length) return { source, status: "error", message: "参照元の保存に失敗しました。" };
     return { source, status: data.length ? "ok" : "empty", data, message: "検索に一致した資料の抜粋です。文書全体・全件を読んだ結果ではありません。" };
   }
-  return { execute, trace, citationResults, contextResults };
+  return { execute, trace, citationResults, contextResults, selectAccount(account: SelectedSearchAccount) { props.selectedAccount = account; }, get selectedAccount() { return props.selectedAccount; }, get salesforceSnapshot() { return salesforceSnapshot; } };
 }

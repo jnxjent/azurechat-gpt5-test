@@ -24,6 +24,7 @@ import { Microphone } from "@/features/ui/chat/chat-input-area/microphone";
 import { StopChat } from "@/features/ui/chat/chat-input-area/stop-chat";
 import { SubmitChat } from "@/features/ui/chat/chat-input-area/submit-chat";
 import React, { useRef, useState } from "react";
+import { useSkillSuggestions } from "@/features/skills/use-skill-suggestions";
 import { useSession } from "next-auth/react";
 import { showError } from "@/features/globals/global-message-store";
 import { chatStore, useChat } from "../chat-store";
@@ -42,6 +43,11 @@ type UploadScope = "common" | "personal";
 
 export const ChatInput = ({ isAdmin: isAdminProp }: { isAdmin?: boolean }) => {
   const { loading, input, chatThreadId } = useChat();
+  const textInput = useRef<HTMLTextAreaElement>(null);
+  const suggestions = useSkillSuggestions(input, chatThreadId, loading === "idle", value => {
+    chatStore.updateInput(value);
+    textInput.current?.focus();
+  });
   const { uploadButtonLabel } = useFileStore();
   const { isPlaying } = useTextToSpeech();
   const { isMicrophoneReady } = useSpeechToText();
@@ -81,13 +87,24 @@ export const ChatInput = ({ isAdmin: isAdminProp }: { isAdmin?: boolean }) => {
     >
       <input type="hidden" name="thinkingMode" value={mode} />
 
+      {suggestions.candidates.length > 0 && <div id="skill-suggestions" className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm" aria-label="使えるスキル候補">
+        <span className="text-muted-foreground">スキル候補（Tabで先頭を選択）</span>
+        {suggestions.candidates.map(skill => <button key={skill.id} type="button" className="rounded border px-2 py-1 hover:bg-muted" title={skill.description}
+          onMouseDown={e => e.preventDefault()} onClick={() => suggestions.select(skill)}>{skill.title}</button>)}
+      </div>}
+
       <ChatTextInput
+        ref={textInput}
+        aria-describedby={suggestions.candidates.length ? "skill-suggestions" : undefined}
+        onCompositionStart={() => suggestions.setComposing(true)}
+        onCompositionEnd={() => suggestions.setComposing(false)}
         onBlur={(e) => {
           if (e.currentTarget.value.replace(/\s/g, "").length === 0) {
             ResetInputRows();
           }
         }}
         onKeyDown={(e) => {
+          if (suggestions.onKeyDown(e)) return;
           onKeyDown(e, submit);
         }}
         onKeyUp={(e) => {

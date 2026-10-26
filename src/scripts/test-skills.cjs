@@ -41,7 +41,8 @@ const container={
 };
 const stubs={
   'server-only':{},
-  '@/features/auth-page/helpers':{async userHashedId(){if(!owner)throw Error('User not found');return owner;}},
+  '@/features/auth-page/helpers':{hashValue:value=>value,async userHashedId(){if(!owner)throw Error('User not found');return owner;}},
+  '@/features/canvas/canvas-actor':{getCanvasActor:async()=>({email:owner})},
   '@/features/common/services/cosmos':{HistoryContainer:()=>container},
   '@/features/theme/theme-config':{AI_NAME:'AI'},
   '@/features/chat-page/chat-services/chat-message-service':{
@@ -100,11 +101,13 @@ async function main(){
   assert.throws(()=>rules.formatSkillContext([{...created,content:'あ'.repeat(3900)},{...created,content:'い'.repeat(3900)}]),/上限/);
 
   owner='user-b';assert.deepEqual(await service.listUserSkills(),[]);
+  assert.deepEqual(await service.listActorSkills(),[],'Teams actor catalog cannot read another owner');
   await assert.rejects(service.getUserSkill(created.id),/見つかりません/);
   await assert.rejects(service.updateUserSkill(created.id,input,1),/見つかりません/);
   await assert.rejects(service.deleteUserSkill(created.id,1),/見つかりません/);
   assert.equal((await api.GET(new Request(`http://local.test/api/skills?download=${created.id}`))).status,400);
   owner='user-a';
+  assert.equal((await service.listActorSkills())[0].id,created.id);
   put({id:'automatic-memory-v1',userId:owner,type:'USER_AUTOMATIC_MEMORY',records:[{summary:'private'}]});
   assert.equal((await service.listUserSkills()).length,1,'hidden memory never appears in Skills');
   const downloaded=await api.GET(new Request(`http://local.test/api/skills?download=${created.id}`));

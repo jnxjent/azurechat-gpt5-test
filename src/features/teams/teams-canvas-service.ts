@@ -70,20 +70,26 @@ export async function registerTeamsCanvasNotificationConversation(activity:Canva
 }
 
 /** SDK-authenticated activity + authoritative conversation roster, never email/AAD IDs from card data. */
-export async function resolveTeamsCanvasActor(activity:CanvasTeamsActivity,api:CanvasTeamsApi):Promise<CanvasActor> {
+export async function resolveTeamsSkillActor(activity:CanvasTeamsActivity,api:CanvasTeamsApi):Promise<CanvasActor> {
   if(process.env.TEAMS_SKIP_AUTH?.trim().toLowerCase()==="true")throw new TeamsCanvasError("認証を省略した環境では共有レポートを操作できません。");
-  if(activity.channelId!=="msteams"||activity.conversation?.conversationType!=="personal")throw new TeamsCanvasError("共有レポートはAzureChatBOTとの個人チャットで操作してください。");
+  if(activity.channelId!=="msteams"||activity.conversation?.conversationType!=="personal")throw new TeamsCanvasError("この操作はAzureChatBOTとの個人チャットで行ってください。");
   const tenant=(process.env.TEAMS_TENANT_ID??process.env.AZURE_AD_TENANT_ID??"").trim().toLowerCase();
   const activityTenant=String(activity.channelData?.tenant?.id??activity.conversation?.tenantId??"").toLowerCase();
   if(!uuid.test(tenant)||activityTenant!==tenant||(activity.conversation?.tenantId&&String(activity.conversation.tenantId).toLowerCase()!==tenant)||!activity.conversation?.id||!activity.from?.id)throw new TeamsCanvasError("Teamsの所属組織と本人を確認できません。");
   const member=await api.conversations.members(activity.conversation.id).getById(activity.from.id);
   const oid=member.aadObjectId?.toLowerCase(),email=(member.email??member.userPrincipalName??"").trim().toLowerCase();
-  if(!oid||!uuid.test(oid)||!isSalesforceAllowedEmail(email)||(member.tenantId&&member.tenantId.toLowerCase()!==tenant)||(activity.from.aadObjectId&&String(activity.from.aadObjectId).toLowerCase()!==oid))throw new TeamsCanvasError("TeamsとSalesforceの本人対応を確認できません。");
-  const principal=`${tenant}:${oid}`;
+  if(!email||!oid||!uuid.test(oid)||(member.tenantId&&member.tenantId.toLowerCase()!==tenant)||(activity.from.aadObjectId&&String(activity.from.aadObjectId).toLowerCase()!==oid))throw new TeamsCanvasError("Teamsの本人対応を確認できません。");
+  return {salesforcePrincipal:`${tenant}:${oid}`,email};
+}
+
+
+export async function resolveTeamsCanvasActor(activity:CanvasTeamsActivity,api:CanvasTeamsApi):Promise<CanvasActor> {
+  const actor=await resolveTeamsSkillActor(activity,api);
+  const {email,salesforcePrincipal:principal}=actor;
+  if(!isSalesforceAllowedEmail(email))throw new TeamsCanvasError("Salesforceの参照権限を確認できません。");
   const registered=JSON.parse(process.env.SF_PERSONAL_USERS_JSON??"[]");
   if(!Array.isArray(registered)||!registered.some(v=>v?.principal?.toLowerCase()===principal&&v?.email?.trim().toLowerCase()===email))throw new TeamsCanvasError("Salesforce本人接続の利用者登録を確認してください。");
-  const actor={salesforcePrincipal:principal,email};
-  await rememberTeamsCanvasConversation(actor,activity.conversation.id);
+  await rememberTeamsCanvasConversation(actor,activity.conversation!.id!);
   return actor;
 }
 

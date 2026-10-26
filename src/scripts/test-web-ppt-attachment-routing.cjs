@@ -37,6 +37,7 @@ function load(relative) {
   const original = mod.require.bind(mod);
   mod.require = name => {
     if (name === 'server-only') return {};
+    if (name === '@/features/skills/execution/skill-personal-access') return load('features/skills/execution/skill-personal-access.ts');
     if (name === './image/image-intent') return load('features/chat-page/chat-services/chat-api/image/image-intent.ts');
     if (name === '@/features/pptx/output-intent') return load('features/pptx/output-intent.ts');
     if (name === '@/features/pptx/palette') return { resolvePptxPaletteInstruction: () => null };
@@ -85,13 +86,15 @@ async function main() {
   services.prepareSkillsForChat = async () => ({selected:[{title:'取引先情報',version:1}]});
   services.shouldRunSkillSearch = count => count > 0;
   let skillExecution;
-  services.runSkillSearch = async props => {skillExecution=props;return {directContent:'固定候補表',citationResults:['{"integration":"skill_search_account_candidates","records":[]}']};};
+  services.runSkillSearch = async props => {skillExecution=props;return {directContent:'固定候補表',citationResults:['{"integration":"skill_search_account_candidates","records":[]}'],salesforceSnapshot:{orgId:'org-test',userId:'user-test',retrievedAt:'2026-10-26T00:00:00Z',proof:'verified-skill-source'}};};
   const saved=[];services.CreateChatMessage = async props => {saved.push(props);return ok({});};
   captured=undefined;
   const selected=await ChatAPIEntry({id:'thread-local',message:'Skill「取引先情報」で調べて',multimodalImage:''},new AbortController().signal);
   assert.ok(skillExecution);assert.equal(captured,undefined,'explicit Skill takes its own route');
   assert.ok((await selected.text()).includes('固定候補表'));
   assert.equal(saved.at(-1).role,'assistant');assert.equal(saved.at(-2).role,'tool');
+  assert.deepEqual(saved.at(-1).salesforceSnapshot.proofs,['verified-skill-source']);
+  assert.deepEqual(saved.at(-2).salesforceSnapshot.proofs,['verified-skill-source'],'continuation tool state must carry SF access lineage too');
   console.log('Web PPT attachment routing passed (actual ChatAPIEntry, storage/model doubles).');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

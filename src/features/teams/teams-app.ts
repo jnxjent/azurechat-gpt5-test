@@ -1,3 +1,5 @@
+import { handleTeamsSkill, skillSubmission } from "./teams-skill-service";
+import { resolveTeamsSkillActor } from "./teams-canvas-service";
 import { isExcelTableToSlideRequest } from "@/features/pptx/output-intent";
 import "server-only";
 import { prepareTeamsAutomaticMemory } from "@/features/memory/automatic-memory-service";
@@ -124,6 +126,14 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
   });
 
   app.on("card.action",async({activity,api,send})=>{
+    if(skillSubmission(activity.value)) {
+      try {
+        const actor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
+        const reply=await handleTeamsSkill({actor,conversation:activity.conversation.id,activityId:String(activity.id??""),message:"",value:activity.value,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
+        if(reply?.text)await send(reply.text);
+        return reply?.card?{statusCode:200 as const,type:"application/vnd.microsoft.card.adaptive" as const,value:reply.card}:{statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:reply?.text??"依頼を送り直してください。"};
+      }catch {return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"本人確認またはスキルの実行に失敗しました。依頼を送り直してください。"};}
+    }
     if(!isTeamsCanvasSubmission(activity.value))return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"このカードの操作には対応していません。"};
     const result=await handleTeamsCanvas(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
     // A client acknowledgement only means delivered. Emit a bot receipt after
@@ -133,6 +143,15 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
   });
 
   app.on("message.ext.card-button-clicked",async({activity,api,send})=>{
+    if(skillSubmission(activity.value)) {
+      try {
+        const actor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
+        const reply=await handleTeamsSkill({actor,conversation:activity.conversation.id,activityId:String(activity.id??""),message:"",value:activity.value,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
+        if(reply?.text)await send(reply.text);
+        if(reply?.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
+      }catch {await send("本人確認またはスキルの実行に失敗しました。依頼を送り直してください。");}
+      return;
+    }
     if(!isTeamsCanvasSubmission(activity.value))return;
     const reply=await handleTeamsCanvas(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
     if(reply.text)await send(reply.text);
@@ -155,6 +174,14 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         if(reply.text)await send(reply.text);
         if(reply.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
         if(activity.from?.id)try {await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId:activity.from.id});}catch{console.warn("[teams-canvas] Usage statistics could not be recorded");}
+        return;
+      }
+      if(skillSubmission(activity.value)) {
+        const actor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
+        const reply=await handleTeamsSkill({actor,conversation:conversationId,activityId,message:text,value:activity.value,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
+        if(reply?.text)await send(reply.text);
+        if(reply?.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
+        await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId:activity.from?.id});
         return;
       }
       const teamsThreadId = buildTeamsThreadId(conversationId);
@@ -251,6 +278,22 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         });
         await recordCompletedTeamsTurn({conversationId, activityId, teamsUserId});
         return;
+      }
+      if(!officeRequest && /Skill|スキル|訪問|客先|商談準備|ブリーフィング|議事録|提案書|提案資料|競合|競争|briefing|visit|proposal/i.test(messageText)) {
+        let skillActor=verifiedPersonalActor;
+        if(!skillActor)try {skillActor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);}catch { /* No unverified catalog access. */ }
+        if(skillActor) {
+          const reply=await handleTeamsSkill({actor:skillActor,conversation:conversationId,activityId,message:messageText,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
+          if(reply) {
+            if(reply.text)await send(reply.text);
+            if(reply.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
+            await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});
+            return;
+          }
+        }else if(/Skill|スキル/i.test(messageText)) {
+          await send("スキルは本人確認ができるBOTとの個人チャットで使ってください。");
+          await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});return;
+        }
       }
       const pendingOfficeReply = await executePendingTeamsOfficeSelection({
         message: messageText,

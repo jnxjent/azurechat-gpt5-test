@@ -33,8 +33,10 @@ export function companyForLookup(message: string, supplied?: unknown): string | 
     if (key.length >= 2 && companyKey(message).includes(key)) return supplied.trim();
   }
   const suffix = message.match(/([^\s、。「」『』"'()（）:：,!?？！]{2,80}(?:株式会社|有限会社|合同会社|㈱))/)?.[1];
-  if (!suffix) return undefined;
-  const name = suffix.replace(/^(?:(?:取引先|顧客|訪問先|会社名)(?:の|は|が)|対象の)+/, "");
+  const prefix = message.match(/(?:株式会社|有限会社|合同会社)[^\s、。「」『』"'()（）:：,!?？！]{2,80}/)?.[0]
+    ?.replace(/(?:について|(?:を|に|へ)(?:訪問|伺|調べ|検索|確認)|の(?:情報|商談|案件|活動|売上|概要|訪問))[\s\S]*$/, "");
+  if (!suffix && !prefix) return undefined;
+  const name = (suffix ?? prefix!).replace(/^(?:(?:取引先|顧客|訪問先|会社名)(?:の|は|が)|対象の)+/, "");
   return companyKey(name).length >= 2 ? name : undefined;
 }
 

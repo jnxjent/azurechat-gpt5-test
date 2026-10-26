@@ -1,6 +1,7 @@
 import "server-only";
 import { createHash } from "node:crypto";
-import { userHashedId } from "@/features/auth-page/helpers";
+import { getCanvasActor } from "@/features/canvas/canvas-actor";
+import { hashValue, userHashedId } from "@/features/auth-page/helpers";
 import { HistoryContainer } from "@/features/common/services/cosmos";
 import { skillName, validateSkill } from "./skill-rules";
 import type { UserSkill } from "./skill-rules";
@@ -24,7 +25,13 @@ async function readOwned(id: string, userId: string): Promise<StoredSkill | unde
   } catch (error) { if ((error as { code?: number }).code === 404) return undefined; throw error; }
 }
 export async function listUserSkills(): Promise<UserSkill[]> {
-  const userId = await userHashedId();
+  return listOwnedSkills(await userHashedId());
+}
+/** Server-only actor bridge, populated only after authoritative Teams roster verification. */
+export async function listActorSkills(): Promise<UserSkill[]> {
+  return listOwnedSkills(hashValue((await getCanvasActor()).email));
+}
+async function listOwnedSkills(userId: string): Promise<UserSkill[]> {
   const { resources } = await HistoryContainer().items.query<StoredSkill>({
     query: "SELECT * FROM c WHERE c.type = @type AND c.userId = @userId AND c.isDeleted = false",
     parameters: [{ name: "@type", value: TYPE }, { name: "@userId", value: userId }],

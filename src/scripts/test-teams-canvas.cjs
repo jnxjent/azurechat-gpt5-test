@@ -70,7 +70,7 @@ async function main(){
  const routes=new Map(),appModule={exports:{}};
  class App{on(event,handler){routes.set(event,handler);}async initialize(){}}
  const appCode=ts.transpileModule(fs.readFileSync(path.join(root,'features/teams/teams-app.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
- const appMocks={'@microsoft/teams.apps':{App},'./next-http-adapter':{NextHttpAdapter:class{}},'./teams-canvas-service':teams,'./teams-file-policy':{stripTeamsAttachmentMarkup:text=>text},'./teams-usage-service':{recordTeamsChatTurn:async()=>{},recordTeamsThreadUsage:async()=>{}}};
+ const appMocks={'@microsoft/teams.apps':{App},'./next-http-adapter':{NextHttpAdapter:class{}},'./teams-canvas-service':teams,'./teams-skill-service':{skillSubmission:()=>undefined},'./teams-file-policy':{stripTeamsAttachmentMarkup:text=>text},'./teams-usage-service':{recordTeamsChatTurn:async()=>{},recordTeamsThreadUsage:async()=>{}}};
  new Function('require','module','exports',appCode)(id=>appMocks[id]??{},appModule,appModule.exports);
  await appModule.exports.getTeamsRuntime();let sent=[];
  await routes.get('message')({activity:{...activity(users[1],{text:url}),id:'open-card'},api,send:async value=>sent.push(value)});

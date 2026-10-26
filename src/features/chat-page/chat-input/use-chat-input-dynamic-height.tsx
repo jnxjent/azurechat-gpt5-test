@@ -1,4 +1,4 @@
-import { proxy, snapshot, useSnapshot } from "valtio";
+import { proxy, useSnapshot } from "valtio";
 
 const MAX_ROWS = 6;
 
@@ -31,15 +31,16 @@ export const onKeyDown = (
   submit: () => void
 ) => {
   state.keysPressed.add(event.key);
-  const snap = snapshot(state);
-  if (snap.keysPressed.has("Enter") && snap.keysPressed.has("Shift")) {
+  // Focus may move on Shift+Tab before keyup reaches this textarea.
+  // Read modifiers from the current event instead of retaining a stale Shift.
+  if (event.key === "Enter" && event.shiftKey) {
     SetInputRows(state.rows + 1);
   }
 
   if (
     !event.nativeEvent.isComposing &&
-    snap.keysPressed.has("Enter") &&
-    !snap.keysPressed.has("Shift")
+    event.key === "Enter" &&
+    !event.shiftKey
   ) {
     submit();
     ResetInputRows();

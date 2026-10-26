@@ -30,6 +30,8 @@ jobs:
           node scripts/test-teams-search-tool.cjs
           node scripts/test-skills.cjs
           node scripts/test-skill-search.cjs
+          node scripts/test-skill-personal.cjs
+          node scripts/test-skill-suggestions.cjs
           node scripts/test-skill-generator.cjs
           node scripts/test-skill-chat-authoring.cjs
           node scripts/test-fiscal-period.cjs
