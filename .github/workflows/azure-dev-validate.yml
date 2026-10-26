@@ -39,6 +39,7 @@ jobs:
           node scripts/test-salesforce-read-result.cjs
           node scripts/test-salesforce-account-selection.cjs
           node scripts/test-salesforce-account-web-entry.cjs
+          node scripts/test-salesforce-opportunity-context.cjs
           node scripts/test-salesforce-personal.cjs
           node scripts/test-salesforce-oauth.cjs
           node scripts/test-salesforce-pilot-search.cjs

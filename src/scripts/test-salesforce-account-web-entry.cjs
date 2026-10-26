@@ -1,11 +1,13 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),ts=require('typescript');
 process.env.SF_EXTENSION_ID='sf-test';process.env.BRAVE_SEARCH_DEFAULT_ENABLED='false';process.env.SKILL_SEARCH_ENABLED='false';
-let records=[],allowed=true,fetches=[],modelCalls=0,nextBody,nextStatus=200,lastSummary;
+let records=[],allowed=true,fetches=[],modelCalls=0,nextBody,nextStatus=200,lastSummary,opportunityToken;
 const ok=response=>({status:'OK',response});
 const original='Salesforceから取引先「J＆T環境㈱」の商談を取得し、完了予定日2026年1月1日〜3月31日の商談金額を月別合計してCanvasで棒グラフにしてください。';
 const candidates=[{id:'001RA00001cNvJ7YAK',name:'Ｊ＆Ｔ環境株式会社 営業本部'},{id:'001A70000058uKbIAI',name:'J＆T環境株式会社　ソリューション営業室'}];
 const services={
  resolveOfficeChatRoute:()=> 'extensions',
+ readOpportunityContext:async()=>({id:'context',owner:'owner',threadId:'test-thread',token:opportunityToken}),
+ saveOpportunityContext:async(previous,token)=>{opportunityToken=token;},
  AI_NAME:'Assistant',CHAT_DEFAULT_SYSTEM_PROMPT:'',
  getCurrentUser:async()=>({name:'test',email:'test@example.invalid'}),
  EnsureChatThreadOperation:async()=>ok({id:'test-thread',extension:['sf-test'],personaMessage:''}),
@@ -25,6 +27,7 @@ const services={
 const cache=new Map();
 function load(relative){const filename=path.resolve(__dirname,'..',relative);if(cache.has(filename))return cache.get(filename);const mod=new Module(filename);mod.filename=filename;mod.paths=Module._nodeModulePaths(path.dirname(filename));const normal=mod.require.bind(mod);mod.require=name=>{
  if(name==='server-only')return {};
+ if(name==='@/features/common/services/salesforce-opportunity-context')return services;
  if(name==='./chat-api-extension')return load('features/chat-page/chat-services/chat-api/chat-api-extension.ts');
  if(name.startsWith('@/features/common/services/salesforce-')&&!name.endsWith('/salesforce-access'))return load(name.slice(2)+'.ts');
  if(name.startsWith('@/')||name.startsWith('../')||name.startsWith('./'))return services;
@@ -84,6 +87,18 @@ async function main(){
  services.getCurrentUser=async()=>({name:'test',email:'test@example.invalid'});
  records=[];const noPrincipalCalls=fetches.length;await run('取引先の登録件数を教えて');assert.equal(fetches.length,noPrincipalCalls);
  delete process.env.SF_PERSONAL_MODE;delete process.env.SF_PERSONAL_SNAPSHOT_POLICY;delete process.env.SF_PERSONAL_SIGNING_KEY;
+ process.env.SF_OPPORTUNITY_POPULATION_ENABLED='true';records=[];nextStatus=200;
+ const beforePopulationModelCalls=modelCalls;
+ nextBody={ok:true,status:'opportunity_population',population_context:'signed-scope-1',population_text:'母集団：31アカウント／条件：進行中',items:[]};
+ assert.equal(await run('J＆T環境㈱の進行中の商談'),'母集団：31アカウント／条件：進行中');assert.equal(opportunityToken,'signed-scope-1');
+ nextBody={ok:true,status:'opportunity_population',population_context:'signed-scope-2',population_text:'母集団：31アカウント／条件：失注',items:[]};
+ assert.equal(await run('失注'),'母集団：31アカウント／条件：失注');assert.equal(lastRequestHeaders['X-SF-Opportunity-Context'],'signed-scope-1');
+ assert.equal(lastRequestHeaders['X-SF-Opportunity-Population'],'v1');
+ nextBody={ok:true,status:'opportunity_population',population_context:'signed-scope-3',population_text:'対象：24番／条件：失注',items:[]};
+ assert.equal(await run('24'),'対象：24番／条件：失注');assert.equal(lastRequestHeaders['X-SF-Opportunity-Context'],'signed-scope-2');assert.equal(fetches.at(-1).searchParams.get('q'),'24');
+ assert.equal(modelCalls,beforePopulationModelCalls,'population results must not be summarized, truncated or expose the signed scope to the model');
+ nextBody={ok:true,status:'conversation'};await run('ありがとう');assert.equal(opportunityToken,undefined,'independent conversation clears the active population');
+ delete process.env.SF_OPPORTUNITY_POPULATION_ENABLED;
  console.log('PASS actual Web entry: account selection, owner scope, authoritative COUNT without summary LLM, conversation');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

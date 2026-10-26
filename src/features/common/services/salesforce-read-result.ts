@@ -27,6 +27,7 @@ function summaryText(summary: any, personal=false): string {
 }
 
 export function salesforceReadText(body: any, personal=false): string | undefined {
+  if(body?.status==="opportunity_population"&&typeof body.population_text==="string")return body.population_text;
   if (!body || typeof body !== "object") return undefined;
   const kind = body.error_kind || body.error;
   if (kind === "personal_oauth_authorization_required") return "Salesforceへの初回接続、または再接続が必要です。[Salesforce本人接続を設定する](/salesforce/connect)。接続後、このチャットで同じ質問を送信してください。";

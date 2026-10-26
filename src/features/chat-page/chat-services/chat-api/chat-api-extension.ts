@@ -701,6 +701,12 @@ async function runSfDirect(props: {
   url.searchParams.set("mode", "real");
 
   const threadId = ((chatThread as any)?.id || "").trim();
+  const populationEnabled=process.env.SF_OPPORTUNITY_POPULATION_ENABLED==="true";
+  let opportunityContext:import("@/features/common/services/salesforce-opportunity-context").OpportunityContext|undefined;
+  if(populationEnabled) {
+    try {opportunityContext=await (await import("@/features/common/services/salesforce-opportunity-context")).readOpportunityContext(threadId);}
+    catch {return salesforceTextStream("商談の検索対象を確認できませんでした。チャットを再読み込みしてから再試行してください。",signal);}
+  }
 
   if (loginEmail) {
     console.log("[SF] Verified login email is available for self-scope.");
@@ -732,11 +738,13 @@ async function runSfDirect(props: {
   try {
     const personalHeaders = await salesforcePersonalHeaders(url, loginEmail ?? "", threadId ?? "");
     const res = await fetch(url.toString(), {
-      signal,
+      signal:populationEnabled?AbortSignal.any([signal,AbortSignal.timeout(90000)]):signal,
       cache: "no-store",
       redirect: "error",
       headers: {
         ...personalHeaders,
+        ...(populationEnabled?{"X-SF-Opportunity-Population":"v1"}:{}),
+        ...(opportunityContext?.token?{"X-SF-Opportunity-Context":opportunityContext.token}:{}),
         ...(loginEmail ? { "X-User-Email": loginEmail } : {}),
         ...(threadId ? { "X-Chat-Thread-Id": threadId } : {}),
       },
@@ -778,6 +786,11 @@ async function runSfDirect(props: {
     });
   }
 
+  if(populationEnabled&&opportunityContext&&sfJson) {
+    try {await (await import("@/features/common/services/salesforce-opportunity-context")).saveOpportunityContext(opportunityContext,sfJson.population_context);}
+    catch {return salesforceTextStream("商談の検索対象を保存できませんでした。同時操作を終了し、チャットを再読み込みしてから再試行してください。",signal);}
+    const {population_context:_privateContext,...display}=sfJson;sfJson=display;
+  }
   let jsonSnippet = "";
   if (sfJson?.status === "conversation" || sfJson?.ok === false || sfJson?.error) personalSnapshot = undefined;
   if (personalSnapshot && typeof sfJson?.snapshot_proof === "string") personalSnapshot.proof = sfJson.snapshot_proof;
