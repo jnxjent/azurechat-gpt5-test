@@ -22,7 +22,7 @@ export function issueSkillCard(actor: CanvasActor, conversation: string, input: 
   return raw + "." + sign(raw);
 }
 function valid(claim: SkillCardClaim) {
-  return claim.v === 1 && /^skill-[a-f0-9]{64}$/.test(claim.skillId) && Number.isSafeInteger(claim.version) && claim.version > 0 &&
+  return claim.v === 1 && /^(?:skill-[a-f0-9]{64}|shared-[a-f0-9]{32})$/.test(claim.skillId) && Number.isSafeInteger(claim.version) && claim.version > 0 &&
     typeof claim.request === "string" && claim.request.trim().length > 0 && claim.request.length <= 2000 &&
     (claim.accounts === undefined || Array.isArray(claim.accounts) && claim.accounts.length > 0 && claim.accounts.length <= 50 && claim.accounts.every(id => /^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(id)));
 }

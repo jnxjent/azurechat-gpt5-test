@@ -110,6 +110,12 @@ async function main(){
  const choiceHistory=[{role:'user',content:'Skill「訪問準備」を使って、J&T環境株式会社を調べて'},{role:'assistant',content:'対象を選択してください。\n1. J&T環境株式会社 — [Salesforceで確認](https://example.sandbox.lightning.force.com/lightning/r/Account/001RA00000rKdLGYA0/view)\n参照したSkill: 訪問準備 v1'}];
  assert.equal(continuation.resolveSkillSearchChoice('1',choiceHistory).account.id,'001RA00000rKdLGYA0');
  assert.equal(continuation.resolveSkillSearchChoice('1番でお願いします',choiceHistory).skillName,'訪問準備');
+ const publicSelection={role:'tool',content:JSON.stringify({integration:'skill_search_selection',observedAt:new Date().toISOString(),skillName:'訪問準備',skillId:'shared-'+'a'.repeat(32),skillVersion:7,originalRequest:choiceHistory[0].content})};
+ const publicChoice=continuation.resolveSkillSearchChoice('1',choiceHistory,[publicSelection]);
+ assert.equal(publicChoice.skillId,'shared-'+'a'.repeat(32));assert.equal(publicChoice.skillVersion,7);
+ assert.equal(continuation.readSkillSelectionSnapshot([{...publicSelection,role:'user'}],'訪問準備',choiceHistory[0].content),undefined,'user messages cannot choose an execution ID for continuation');
+ const expiredSelection=continuation.readSkillSelectionSnapshot([publicSelection],'訪問準備',choiceHistory[0].content,Date.now()+700000);
+ assert.equal(expiredSelection.skillId,publicChoice.skillId);assert.equal(expiredSelection.skillVersion,undefined,'expired selection keeps its ID but fails execution version validation; never falls back by name');
  assert.equal(continuation.isSkillSearchChoiceReply('７で'),true);
  for(const reply of ['では８で','それでは、８番で','じゃあ ８番でお願いします'])assert.equal(continuation.isSkillSearchChoiceReply(reply),true);
  assert.equal(continuation.isSkillSearchChoiceReply('では8時で'),false);

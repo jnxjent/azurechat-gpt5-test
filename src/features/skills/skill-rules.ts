@@ -8,10 +8,13 @@ export interface UserSkill {
   description: string;
   content: string;
   enabled: boolean;
-  /** Visible to every signed-in employee as a read-only source to copy. */
+  /** Signed-in employees may view, execute and copy; only the owner may edit. */
   shared: boolean;
   version: number;
   updatedAt: string;
+  /** Execution metadata for another employee's currently published Skill. */
+  scope?: "own" | "shared";
+  ownerName?: string;
 }
 export interface SkillInput { title: string; description: string; content: string; enabled: boolean; shared?: boolean }
 /** Another employee's published Skill. The owner's storage key is never exposed. */

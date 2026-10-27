@@ -3,8 +3,23 @@ import { sameSalesforceId, withSalesforceRecordId } from "./salesforce-search-qu
 import { readFiscalPeriod } from "./skill-search-requirements";
 
 export type SelectedSearchAccount = { id: string; name: string };
+type SkillContinuation = { skillName: string; account: SelectedSearchAccount; originalRequest: string; skillId?: string; skillVersion?: number };
 
-export function resolveSkillSearchPeriod(message: string, messages: Array<{role: string; content: unknown}>, now = Date.now()): { skillName: string; account: SelectedSearchAccount; originalRequest: string } | undefined {
+/** Only server tool metadata from the current user's thread may carry a selected ID. */
+export function readSkillSelectionSnapshot(messages: Array<{role: string; content: unknown}>, title: string, originalRequest: string, now = Date.now()): {skillId: string; skillVersion?: number} | undefined {
+  for (const message of messages) {
+    if (message.role !== "tool" || typeof message.content !== "string") continue;
+    try {
+      const state = JSON.parse(message.content);
+      if (state.integration !== "skill_search_selection" || state.skillName !== title || state.originalRequest !== originalRequest || !/^(?:skill-[a-f0-9]{64}|shared-[a-f0-9]{32})$/.test(state.skillId)) continue;
+      const age = now - Date.parse(state.observedAt);
+      return { skillId: state.skillId, ...(Number.isFinite(age) && age >= 0 && age <= 600_000 && Number.isSafeInteger(state.skillVersion) && state.skillVersion > 0 ? { skillVersion: state.skillVersion } : {}) };
+    } catch { /* Unrelated tool data. */ }
+  }
+  return undefined;
+}
+
+export function resolveSkillSearchPeriod(message: string, messages: Array<{role: string; content: unknown}>, now = Date.now()): SkillContinuation | undefined {
   if (!readFiscalPeriod(message) || message.length > 300) return undefined;
   const lastAssistant = messages.find(item => item.role === "assistant");
   if (typeof lastAssistant?.content !== "string" || !/会計年度|会計期間|対象期間|売上|受注/.test(lastAssistant.content)) return undefined;
@@ -17,7 +32,7 @@ export function resolveSkillSearchPeriod(message: string, messages: Array<{role:
       const age = now - Date.parse(state.observedAt);
       if (!Number.isFinite(age) || age < 0 || age > 600_000 || typeof state.skillName !== "string" || /[「」『』\n]/.test(state.skillName) || !/^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(state.account?.id) || typeof state.account.name !== "string" || typeof state.originalRequest !== "string") return undefined;
       if (!lastAssistant.content.includes(`参照したSkill: ${state.skillName} v`)) return undefined;
-      return { skillName: state.skillName, account: state.account, originalRequest: state.originalRequest + "\n会計期間の回答: " + message };
+      return { skillName: state.skillName, account: state.account, originalRequest: state.originalRequest + "\n会計期間の回答: " + message, ...(typeof state.skillId === "string" ? { skillId: state.skillId, skillVersion: state.skillVersion } : {}) };
     } catch { /* Unrelated persisted tool result. */ }
   }
   return undefined;
@@ -46,7 +61,7 @@ function normalizeChoiceReply(message: string): string {
 
 // Carry a Skill only for a short choice reply to the immediately preceding
 // account-selection question. Normal follow-up chats keep their original route.
-export function resolveSkillSearchChoice(message: string, history: ChatCompletionMessageParam[]): { skillName: string; account: SelectedSearchAccount; originalRequest: string } | undefined {
+export function resolveSkillSearchChoice(message: string, history: ChatCompletionMessageParam[], persisted: Array<{role: string; content: unknown}> = []): SkillContinuation | undefined {
   message = normalizeChoiceReply(message);
   const number = message.trim().match(/^(\d{1,2})(?:番|番目)?(?:で|を)?(?:お願いします|選択します|にしてください|です)?[。.!！]?$/)?.[1];
   const id = message.trim().match(/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/)?.[0];
@@ -61,7 +76,7 @@ export function resolveSkillSearchChoice(message: string, history: ChatCompletio
     if (!match || (number ? match[1] !== number : match[3] !== id)) continue;
     const original = [...history].reverse().find(item => item.role === "user" && typeof item.content === "string" && item.content.includes(skillName));
     if (!original || typeof original.content !== "string") return undefined;
-    return { skillName, account: { id: match[3], name: match[2].replace(/\*\*/g, "").replace(/\\([\\`*_[\]<>|])/g, "$1").trim() }, originalRequest: original.content };
+    return { skillName, account: { id: match[3], name: match[2].replace(/\*\*/g, "").replace(/\\([\\`*_[\]<>|])/g, "$1").trim() }, originalRequest: original.content, ...readSkillSelectionSnapshot(persisted, skillName, original.content) };
   }
   return undefined;
 }

@@ -131,26 +131,28 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   const currentChatThread = currentChatThreadResponse.response;
   const user = await getCurrentUser();
   let skillsResult = await prepareSkillsForChat({
-    message: props.message, threadId: currentChatThread.id, userName: user.name,
+    message: props.message, threadId: currentChatThread.id, userName: user.name, skillId: props.skillId, skillVersion: props.skillVersion,
   });
   if (skillsResult.response) return skillsResult.response;
   let skillChoice;
+  let skillChoiceRecords: ChatMessageModel[] = [];
   if (!skillsResult.selected.length && shouldRunSkillSearch(1) && isSkillSearchChoiceReply(props.message)) {
-    skillChoice = resolveSkillSearchChoice(props.message, await _getHistory(currentChatThread));
-    if (skillChoice) skillsResult = await prepareSkillsForChat({ message: `Skill「${skillChoice.skillName}」を使って、${props.message}`, threadId: currentChatThread.id, userName: user.name });
+    const previous = await FindTopChatMessagesForCurrentUser(currentChatThread.id, 20);
+    if (previous.status === "OK") skillChoiceRecords = previous.response;
+    skillChoice = resolveSkillSearchChoice(props.message, await _getHistory(currentChatThread), skillChoiceRecords);
+    if (skillChoice) skillsResult = await prepareSkillsForChat({ message: `Skill「${skillChoice.skillName}」を使って、${props.message}`, threadId: currentChatThread.id, userName: user.name, skillId: skillChoice.skillId, skillVersion: skillChoice.skillVersion });
     if (skillsResult.response) return skillsResult.response;
   }
   if (!skillsResult.selected.length && shouldRunSkillSearch(1) && readFiscalPeriod(props.message)) {
     const previous = await FindTopChatMessagesForCurrentUser(currentChatThread.id, 20);
-    if (previous.status === "OK") skillChoice = resolveSkillSearchPeriod(props.message, previous.response);
-    if (skillChoice) skillsResult = await prepareSkillsForChat({ message: `Skill「${skillChoice.skillName}」を使って、${props.message}`, threadId: currentChatThread.id, userName: user.name });
+    if (previous.status === "OK") { skillChoiceRecords = previous.response; skillChoice = resolveSkillSearchPeriod(props.message, previous.response); }
+    if (skillChoice) skillsResult = await prepareSkillsForChat({ message: `Skill「${skillChoice.skillName}」を使って、${props.message}`, threadId: currentChatThread.id, userName: user.name, skillId: skillChoice.skillId, skillVersion: skillChoice.skillVersion });
     if (skillsResult.response) return skillsResult.response;
   }
   const selectedSkills = skillsResult.selected;
   if (shouldRunSkillSearch(selectedSkills.length)) {
     const history = await _getHistory(currentChatThread);
-    const choiceMessages = skillChoice ? await FindTopChatMessagesForCurrentUser(currentChatThread.id, 20) : undefined;
-    const selectedAccountRecord = skillChoice && choiceMessages?.status === "OK" ? readSelectedAccountSnapshot(choiceMessages.response, skillChoice.account.id) : undefined;
+    const selectedAccountRecord = skillChoice ? readSelectedAccountSnapshot(skillChoiceRecords, skillChoice.account.id) : undefined;
     await CreateChatMessage({ name: user.name, content: props.message, role: "user", chatThreadId: currentChatThread.id });
     const { runner, directContent, citationResults, salesforceSnapshot } = await runSkillSearch({ chatThread: currentChatThread, skills: selectedSkills, message: props.message, history, email: user.email, signal, selectedAccount: skillChoice?.account, originalRequest: skillChoice?.originalRequest, selectedAccountRecord });
     if (directContent) {

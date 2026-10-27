@@ -107,7 +107,7 @@ export function SkillGenerator(props: { skills: UserSkill[]; shared: SharedSkill
       <details><summary className="cursor-pointer text-sm">プロンプト本文を表示</summary>
         <pre aria-label="生成したプロンプト案" className="mt-2 max-h-[24rem] overflow-y-auto whitespace-pre-wrap break-words rounded border bg-background p-3 font-mono text-sm">{draft.content}</pre>
       </details>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={publish} disabled={saving} onChange={event => setPublish(event.target.checked)} />全社に公開する（他の社員が閲覧・コピーできます）</label>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={publish} disabled={saving} onChange={event => setPublish(event.target.checked)} />全社に公開する（他の社員が閲覧・利用・コピーできます）</label>
       <div className="flex flex-wrap gap-2">
         {updatesOwn && <button type="button" disabled={busy || saving} onClick={() => void save("update")} className="rounded bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50">{saving ? "保存中…" : `「${basedOn!.title}」を更新`}</button>}
         <button type="button" disabled={busy || saving} onClick={() => void save("create")} className={updatesOwn ? "rounded border px-3 py-2 disabled:opacity-50" : "rounded bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"}>{saving && !updatesOwn ? "保存中…" : updatesOwn ? "新しいSkillとして保存" : "Skillsに保存"}</button>

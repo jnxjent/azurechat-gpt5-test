@@ -2,7 +2,7 @@ import "server-only";
 import type { IAdaptiveCard } from "@microsoft/teams.cards";
 import { withCanvasActor, type CanvasActor } from "@/features/canvas/canvas-actor";
 import { listActorSkills } from "@/features/skills/skill-service";
-import { formatSkillContext, requestsSkillReference, selectSkills, type UserSkill } from "@/features/skills/skill-rules";
+import { formatSkillContext, requestsSkillReference, selectSkills, skillName, type UserSkill } from "@/features/skills/skill-rules";
 import { applySkillSuggestion, suggestSkills } from "@/features/skills/skill-suggestions";
 import { runSkillSearch } from "@/features/skills/execution/skill-search-runner";
 import { shouldRunSkillSearch } from "@/features/skills/execution/skill-search-policy";
@@ -29,9 +29,9 @@ export async function handleTeamsSkill(props: { actor: CanvasActor; conversation
 async function execute(props: Parameters<typeof handleTeamsSkill>[0]): Promise<TeamsSkillReply | undefined> {
   const submission = skillSubmission(props.value);
   if (!shouldRunSkillSearch(1)) return submission || /Skill|スキル/i.test(props.message) ? {text:"スキル検索が有効になっていません。"} : undefined;
+  if (props.message.length > 2000) return submission || /Skill|スキル/i.test(props.message) ? {text:"スキルへの依頼は2,000文字以内にまとめてください。"} : undefined;
   const skills = await listActorSkills().catch(() => undefined);
   if (!skills) return submission || /Skill|スキル/i.test(props.message) ? {text:"保存済みスキルを取得できませんでした。しばらくしてから再度お試しください。"} : undefined;
-  if (props.message.length > 2000) return {text:"スキルへの依頼は2,000文字以内にまとめてください。"};
   let selected: UserSkill[] = [], original = props.message;
   let selectedAccount: {id:string;name:string} | undefined;
   if (submission) {
@@ -39,7 +39,7 @@ async function execute(props: Parameters<typeof handleTeamsSkill>[0]): Promise<T
     try { claim = verifySkillCard(submission.token, props.actor, props.conversation); }
     catch { return {text:"このスキル候補は期限切れ、または本人確認ができません。依頼を送り直してください。"}; }
     const skill = skills.find(s => s.id === claim.skillId && s.enabled && s.version === claim.version);
-    if (!skill) return {text:"スキルが変更・無効化されています。依頼を送り直してください。"};
+    if (!skill) return {text:"スキルが変更・非公開・無効化されています。依頼を送り直してください。"};
     selected = [skill]; original = claim.request;
     if (claim.accounts) {
       if (typeof submission.accountId !== "string" || !claim.accounts.includes(submission.accountId)) return {text:"カードから取引先を選択してください。"};
@@ -49,10 +49,11 @@ async function execute(props: Parameters<typeof handleTeamsSkill>[0]): Promise<T
     if (submission.period !== undefined && (typeof submission.period !== "string" || submission.period.length > 120 || !readFiscalPeriod(submission.period))) return {text:"期間は「2025年4月～2026年3月」の形式で入力してください。"};
   } else {
     if (requestsSkillReference(props.message)) selected = selectSkills(skills, props.message);
+    if (new Set(selected.map(skill => skillName(skill.title))).size !== selected.length) selected = [];
     if (!selected.length) {
       const candidates = suggestSkills(skills, props.message);
       if (!candidates.length || props.message.length > 2000) return /Skill|スキル/i.test(props.message) ? {text:"指定された有効なスキルが見つかりません。Web版のSkillsで保存名を確認してください。"} : undefined;
-      return {card:{type:"AdaptiveCard",version:"1.4",body:[{type:"TextBlock",text:"この依頼に使えそうなスキル",weight:"Bolder",wrap:true},{type:"TextBlock",text:"選ぶと、この依頼に適用して実行します。",wrap:true}],actions:candidates.map(s => ({type:"Action.Submit",title:s.title,data:{feature:"ac.skill",token:issueSkillCard(props.actor,props.conversation,{skillId:s.id,version:s.version,request:props.message})}}))}};
+      return {card:{type:"AdaptiveCard",version:"1.4",body:[{type:"TextBlock",text:"この依頼に使えそうなスキル",weight:"Bolder",wrap:true},{type:"TextBlock",text:"選ぶと、この依頼に適用して実行します。",wrap:true}],actions:candidates.map(s => ({type:"Action.Submit",title:s.title+(s.scope === "shared" ? `（全社公開・${s.ownerName ?? "社員"}）` : ""),data:{feature:"ac.skill",token:issueSkillCard(props.actor,props.conversation,{skillId:s.id,version:s.version,request:props.message})}}))}};
     }
   }
   formatSkillContext(selected);

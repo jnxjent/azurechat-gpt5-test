@@ -36,6 +36,14 @@ export async function POST(req: Request) {
   const content = formData.get("content");
   const multimodalImage = await readImageFormData(formData);
   const uiThinkingMode = formData.get("thinkingMode") as ThinkingModeUI | null;
+  const selectedSkillId = formData.get("selectedSkillId");
+  const rawSkillVersion = formData.get("selectedSkillVersion");
+  const skillVersion = typeof rawSkillVersion === "string" ? Number(rawSkillVersion) : undefined;
+  if ((selectedSkillId !== null || rawSkillVersion !== null) &&
+      (typeof selectedSkillId !== "string" || !/^(?:skill-[a-f0-9]{64}|shared-[a-f0-9]{32})$/.test(selectedSkillId) ||
+       typeof rawSkillVersion !== "string" || !/^[1-9]\d*$/.test(rawSkillVersion) || !Number.isSafeInteger(skillVersion))) {
+    return Response.json({ error: "invalid_skill_selection", message: "Skillの選択情報が正しくありません。候補を選び直してください。" }, { status: 400 });
+  }
 
   if (typeof content !== "string") {
     return new Response(
@@ -77,6 +85,8 @@ export async function POST(req: Request) {
   // 🧠 API に渡すプロンプト生成
   const userPrompt: UserPromptWithMode = {
     ...(parsed as UserPromptWithMode),
+    skillId: typeof selectedSkillId === "string" ? selectedSkillId : undefined,
+    skillVersion,
     thinkingMode: uiThinkingMode ?? "standard",
     apiThinkingMode,
     multimodalImage:

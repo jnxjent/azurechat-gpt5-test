@@ -44,10 +44,11 @@ type UploadScope = "common" | "personal";
 export const ChatInput = ({ isAdmin: isAdminProp }: { isAdmin?: boolean }) => {
   const { loading, input, chatThreadId } = useChat();
   const textInput = useRef<HTMLTextAreaElement>(null);
+  const { data: session } = useSession();
   const suggestions = useSkillSuggestions(input, chatThreadId, loading === "idle", value => {
     chatStore.updateInput(value);
     textInput.current?.focus();
-  });
+  }, session?.user?.email ?? "");
   const { uploadButtonLabel } = useFileStore();
   const { isPlaying } = useTextToSpeech();
   const { isMicrophoneReady } = useSpeechToText();
@@ -59,7 +60,6 @@ export const ChatInput = ({ isAdmin: isAdminProp }: { isAdmin?: boolean }) => {
   const mode = "standard";
 
   // ★ 管理者判定（セッションのisAdminを使用 - ビルド時env不要）
-  const { data: session } = useSession();
   const isAdmin = isAdminProp ?? Boolean((session?.user as any)?.isAdmin);
 
   const [uploadScope, setUploadScope] = useState<UploadScope>("personal");
@@ -86,11 +86,17 @@ export const ChatInput = ({ isAdmin: isAdminProp }: { isAdmin?: boolean }) => {
       status={uploadButtonLabel}
     >
       <input type="hidden" name="thinkingMode" value={mode} />
+      {suggestions.selectedSkill && <>
+        <input type="hidden" name="selectedSkillId" value={suggestions.selectedSkill.id} />
+        <input type="hidden" name="selectedSkillVersion" value={suggestions.selectedSkill.version} />
+        <div className="flex items-center gap-2 px-3 py-2 text-sm">使用Skill：{suggestions.selectedSkill.title}（{suggestions.selectedSkill.scope === "shared" ? `全社公開・${suggestions.selectedSkill.ownerName ?? "社員"}` : "自分のSkill"}）<button type="button" onClick={suggestions.clearSelection} className="underline">選択を解除</button></div>
+      </>}
 
       {suggestions.candidates.length > 0 && <div id="skill-suggestions" className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm" aria-label="使えるスキル候補">
-        <span className="text-muted-foreground">スキル候補（Tabで先頭を選択）</span>
-        {suggestions.candidates.map(skill => <button key={skill.id} type="button" className="rounded border px-2 py-1 hover:bg-muted" title={skill.description}
-          onMouseDown={e => e.preventDefault()} onClick={() => suggestions.select(skill)}>{skill.title}</button>)}
+        <span className="text-muted-foreground">スキル候補（↑↓で選択・Tabで確定）</span>
+        <span aria-live="polite" className="sr-only">選択中：{suggestions.candidates[suggestions.activeIndex]?.title}</span>
+        {suggestions.candidates.map((skill,index) => <button key={skill.id} id={`skill-suggestion-${index}`} type="button" aria-pressed={index === suggestions.activeIndex} className={`rounded border px-2 py-1 hover:bg-muted ${index === suggestions.activeIndex ? "ring-2 ring-primary" : ""}`} title={skill.description}
+          onMouseDown={e => e.preventDefault()} onClick={() => suggestions.select(skill)}>{skill.title}{skill.scope === "shared" ? `（全社公開・${skill.ownerName ?? "社員"}）` : ""}</button>)}
       </div>}
 
       <ChatTextInput

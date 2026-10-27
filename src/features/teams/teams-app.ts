@@ -279,7 +279,14 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         await recordCompletedTeamsTurn({conversationId, activityId, teamsUserId});
         return;
       }
-      if(!officeRequest && /Skill|スキル|訪問|客先|商談準備|ブリーフィング|議事録|提案書|提案資料|競合|競争|briefing|visit|proposal/i.test(messageText)) {
+      const pendingOfficeReply = await executePendingTeamsOfficeSelection({message:messageText,conversationId});
+      if(pendingOfficeReply) {
+        await send(pendingOfficeReply);
+        await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});
+        return;
+      }
+      const offerSkillSuggestions = process.env.SKILL_SEARCH_ENABLED === "true" && activity.conversation?.conversationType === "personal" && messageText.trim().length >= 4 && messageText.length <= 2000;
+      if(!officeRequest && (offerSkillSuggestions || /Skill|スキル/i.test(messageText))) {
         let skillActor=verifiedPersonalActor;
         if(!skillActor)try {skillActor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);}catch { /* No unverified catalog access. */ }
         if(skillActor) {
@@ -295,20 +302,6 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
           await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});return;
         }
       }
-      const pendingOfficeReply = await executePendingTeamsOfficeSelection({
-        message: messageText,
-        conversationId,
-      });
-      if (pendingOfficeReply) {
-        await send(pendingOfficeReply);
-        await recordCompletedTeamsTurn({
-          conversationId,
-          activityId,
-          teamsUserId,
-        });
-        return;
-      }
-
       const salesforceAllowed = isSalesforceAllowedEmail(userEmail);
       const salesforceRouting = await resolveTeamsSalesforceRoute({
         message: messageText,

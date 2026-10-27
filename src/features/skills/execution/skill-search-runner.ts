@@ -34,6 +34,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
   if (latestPeriod) requirements.fiscalPeriod = latestPeriod;
   const coverage: Array<{ operation: string; status: string; reason?: string; count?: number; truncated?: boolean; queryCount?: number }> = [];
   const search = createSkillSearchTools({ email: props.email, threadId: props.chatThread.id, signal: controller.signal, userMessage: props.originalRequest ?? props.message, selectedAccount: props.selectedAccount, selectedAccountRecord: props.selectedAccountRecord, fiscalPeriod: requirements.fiscalPeriod, documentSearch: props.documentSearch });
+  if (props.skills.length === 1) search.contextResults.push(JSON.stringify({ integration: "skill_search_selection", observedAt: new Date().toISOString(), skillName: props.skills[0].title, skillId: props.skills[0].id, skillVersion: props.skills[0].version, originalRequest: props.originalRequest ?? props.message }));
   let selectedAccount = props.selectedAccount;
   const model = process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME?.trim() || "gpt-5";
   const selectedRecord = !personal && props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) ? props.selectedAccountRecord : undefined;
@@ -144,7 +145,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     runner.on("abort", cleanup);
     selectedAccount = search.selectedAccount ?? selectedAccount;
     const pendingFiscal = selectedAccount && requirements.operations.includes("sales") && props.skills.length === 1
-      ? [JSON.stringify({ integration: requirements.fiscalPeriod ? "skill_search_fiscal_complete" : "skill_search_fiscal_pending", observedAt: new Date().toISOString(), skillName: props.skills[0].title, account: selectedAccount, originalRequest: props.originalRequest ?? props.message })] : [];
+      ? [JSON.stringify({ integration: requirements.fiscalPeriod ? "skill_search_fiscal_complete" : "skill_search_fiscal_pending", observedAt: new Date().toISOString(), skillName: props.skills[0].title, skillId: props.skills[0].id, skillVersion: props.skills[0].version, account: selectedAccount, originalRequest: props.originalRequest ?? props.message })] : [];
     return { runner, salesforceSnapshot: search.salesforceSnapshot, directContent: undefined, citationResults: [...search.citationResults, ...search.contextResults, ...pendingFiscal] };
   } catch (error) { cleanup(); throw error; }
 }

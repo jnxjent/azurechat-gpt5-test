@@ -35,7 +35,18 @@ export async function listUserSkills(): Promise<UserSkill[]> {
 }
 /** Server-only actor bridge, populated only after authoritative Teams roster verification. */
 export async function listActorSkills(): Promise<UserSkill[]> {
-  return listOwnedSkills(hashValue((await getCanvasActor()).email));
+  return listAvailableForUser(hashValue((await getCanvasActor()).email));
+}
+/** Execution catalog only. CRUD and AI authoring still read the owner's private catalog. */
+export async function listAvailableSkills(): Promise<UserSkill[]> {
+  return listAvailableForUser(await userHashedId());
+}
+const sharedRef = (item: StoredSkill) => createHash("sha256").update(`${item.userId}:${item.id}`).digest("hex").slice(0, 32);
+async function listAvailableForUser(userId: string): Promise<UserSkill[]> {
+  const own = await listOwnedSkills(userId);
+  const shared = await readPublishedSkills(userId).catch(() => []);
+  return [...own, ...shared.filter(item => item.enabled).map(item => ({ ...publicSkill(item),
+    id: `shared-${sharedRef(item)}`, scope: "shared" as const, ownerName: item.ownerName?.trim() || "社員" }))];
 }
 async function listOwnedSkills(userId: string): Promise<UserSkill[]> {
   const { resources } = await HistoryContainer().items.query<StoredSkill>({
@@ -44,16 +55,17 @@ async function listOwnedSkills(userId: string): Promise<UserSkill[]> {
   }, { partitionKey: userId }).fetchAll();
   return resources.sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)).map(publicSkill);
 }
-/** Other employees' published Skills, read-only. Callers copy them into their own Skills. */
-export async function listSharedSkills(): Promise<SharedSkill[]> {
-  const userId = await userHashedId();
+async function readPublishedSkills(userId: string): Promise<StoredSkill[]> {
   const { resources } = await HistoryContainer().items.query<StoredSkill>({
     query: "SELECT TOP 200 * FROM c WHERE c.type = @type AND c.shared = true AND c.isDeleted = false AND c.userId != @userId",
     parameters: [{ name: "@type", value: TYPE }, { name: "@userId", value: userId }],
   }).fetchAll();
   return resources.filter(item => item.type === TYPE && item.shared === true && !item.isDeleted && item.userId !== userId)
-    .sort((a,b) => b.updatedAt.localeCompare(a.updatedAt))
-    .map(item => ({ ref: createHash("sha256").update(`${item.userId}:${item.id}`).digest("hex").slice(0, 32),
+    .sort((a,b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+/** Read-only library sources; execution additionally checks enabled and current publication. */
+export async function listSharedSkills(): Promise<SharedSkill[]> {
+  return (await readPublishedSkills(await userHashedId())).map(item => ({ ref: sharedRef(item),
       title: item.title, description: item.description, content: item.content,
       ownerName: item.ownerName?.trim() || "社員", updatedAt: item.updatedAt }));
 }

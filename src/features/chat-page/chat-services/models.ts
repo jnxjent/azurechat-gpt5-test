@@ -48,6 +48,8 @@ export interface ChatThreadModel {
 }
 
 export interface UserPrompt {
+  skillId?: string;
+  skillVersion?: number;
   id: string; // thread id
   message: string;
   multimodalImage: string;

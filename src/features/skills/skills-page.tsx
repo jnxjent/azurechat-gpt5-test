@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { importSkill, skillBytes, SKILL_CONTENT_BYTES } from "./skill-rules";
 import type { SharedSkill, SkillInput, UserSkill } from "./skill-rules";
 import { SkillGenerator } from "./skill-generator";
+import { notifySkillCatalogChanged } from "./skill-suggestions";
 
 const blank: SkillInput = {title:"",description:"",content:"",enabled:true,shared:false};
 const formOf = (item: UserSkill): SkillInput => ({title:item.title,description:item.description,content:item.content,enabled:item.enabled,shared:item.shared});
@@ -41,7 +42,7 @@ export function SkillsPage() {
         body:JSON.stringify({...form,id:selected?.id,version:selected?.version})});
       const data=await response.json();
       if (!response.ok) throw new Error(data.error||"保存できませんでした。");
-      setSelected(data.item);setForm(formOf(data.item));
+      notifySkillCatalogChanged();setSelected(data.item);setForm(formOf(data.item));
       await refresh();setEditorOpen(false);setNotice(`「${data.item.title}」を保存しました。`);
     } catch(cause) {setError(cause instanceof Error?cause.message:String(cause));} finally {setBusy(false);}
   }
@@ -51,7 +52,7 @@ export function SkillsPage() {
     try {
       const response=await fetch("/api/skills",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:selected.id,version:selected.version})});
       const data=await response.json(); if (!response.ok) throw new Error(data.error||"削除できませんでした。");
-      setSelected(null);setForm(blank);setEditorOpen(false);await refresh();setNotice("Skillを削除しました。");
+      notifySkillCatalogChanged();setSelected(null);setForm(blank);setEditorOpen(false);await refresh();setNotice("Skillを削除しました。");
     } catch(cause) {setError(cause instanceof Error?cause.message:String(cause));} finally {setBusy(false);}
   }
   async function upload(file:File|undefined) {
@@ -74,7 +75,7 @@ export function SkillsPage() {
   return <main className="mx-auto h-dvh min-h-0 w-full max-w-6xl overflow-y-auto p-4 md:p-6">
     <h1 className="text-2xl font-semibold">Skills</h1>
     <p className="mt-2 text-sm text-muted-foreground">仕事ごとの「やり方」をプロンプトとして保存する、あなた専用のスペースです。</p>
-    <p className="mt-1 text-sm text-muted-foreground">Skillを使うときは、チャットで、「（Skill名）を使って〇〇して」と言います。</p>
+    <p className="mt-1 text-sm text-muted-foreground">チャットに依頼を書くと、本人のSkillと全社公開Skillの候補が出ます。↑↓で選んでTabで確定するか、「（Skill名）を使って〇〇して」と指定します。</p>
     <section aria-labelledby="skills-execution" className="mt-6 rounded border-2 border-slate-400 dark:border-slate-500 p-4 md:p-5">
       <h2 id="skills-execution" className="text-lg font-semibold">1 Skills実行</h2>
       <div className="mt-3 pl-4">
@@ -98,6 +99,7 @@ export function SkillsPage() {
         </section>
       </div>
       {generating ? <SkillGenerator skills={items} shared={shared} onClose={()=>setGenerating(false)} onSaved={item=>{
+        notifySkillCatalogChanged();
         setGenerating(false);setEditorOpen(false);setSelected(item);setForm(formOf(item));setError("");setNotice(`「${item.title}」をSkillsに保存しました。`);
         void refresh().catch(()=>setItems(previous=>[item,...previous.filter(skill=>skill.id!==item.id)]));
       }} onApply={(draft,baseId,baseVersion)=>{
@@ -115,7 +117,7 @@ export function SkillsPage() {
           <label className="block text-sm font-medium">プロンプト本文（Markdown）<textarea required maxLength={12000} value={form.content} onChange={e=>setForm({...form,content:e.target.value})} className="mt-1 min-h-[22rem] w-full rounded border border-slate-400 dark:border-slate-500 bg-background p-3 font-mono text-sm" placeholder={'# 目的\n\n# 入力する情報\n\n# 進め方\n\n# 出力形式'} /></label>
           <p className={`text-xs ${bytes>SKILL_CONTENT_BYTES?"text-red-600":"text-muted-foreground"}`}>{bytes.toLocaleString()} / {SKILL_CONTENT_BYTES.toLocaleString()} バイト · 呼び出したときだけ参照します</p>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.enabled} onChange={e=>setForm({...form,enabled:e.target.checked})} />チャットからの呼び出しを有効にする</label>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.shared===true} onChange={e=>setForm({...form,shared:e.target.checked})} />全社に公開する（他の社員が閲覧・コピーできます。編集はあなただけ）</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.shared===true} onChange={e=>setForm({...form,shared:e.target.checked})} />全社に公開する（他の社員が閲覧・利用・コピーできます。編集はあなただけ）</label>
           <div className="flex gap-3"><button disabled={bytes>SKILL_CONTENT_BYTES} type="submit" className="rounded bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50">{busy?"保存中…":"保存"}</button>{selected&&<button type="button" className="rounded border border-slate-400 dark:border-slate-500 px-4 py-2" onClick={()=>void remove()}>削除</button>}</div>
         </fieldset>
       </form> : null}
@@ -138,7 +140,7 @@ export function SkillsPage() {
           </button>)}
         </div>
         <h3 className="pt-3 font-medium">全社公開のSkill（他の社員）</h3>
-        <p className="text-xs text-muted-foreground">他の社員が公開したSkillです。コピーすると、あなたのSkillとして編集・保存できます（元のSkillは変わりません）。</p>
+        <p className="text-xs text-muted-foreground">他の社員が公開したSkillです。有効なSkillはチャットの候補から直接利用できます。自分用に編集したい場合はコピーしてください（元のSkillは変わりません）。</p>
         {!loading&&!filteredShared.length&&<p className="text-sm text-muted-foreground">{shared.length?"一致する公開Skillがありません。":"まだ公開されたSkillはありません。"}</p>}
         <div className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {filteredShared.map(item=><div key={item.ref} className="flex h-full flex-col items-start rounded border border-dashed border-slate-400 p-3 dark:border-slate-500">
