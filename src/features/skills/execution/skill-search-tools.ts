@@ -15,15 +15,37 @@ import { formatCitationMarkup } from "@/features/ui/markdown/citation-markup";
 import { buildAccountCandidateQuery, hasInvalidCompanyFilter, isCompanyLookup, matchesCompanyName, sameSalesforceId, withSalesforceRecordId } from "./salesforce-search-query";
 import type { SelectedSearchAccount } from "./skill-search-continuation";
 import { readFiscalPeriod, type FiscalPeriod } from "./skill-search-requirements";
-import { resolveSkillSalesforceScope, buildSkillSalesforceQuery } from "./skill-salesforce-scope";
+import { resolveSkillSalesforceScope, buildSkillSalesforceQuery, SkillQueryContextError } from "./skill-salesforce-scope";
+import { skillGatewayThread } from "@/features/common/services/salesforce-proof-thread";
 
-function skillContextMissing(source: SearchSource, body: any): SkillSearchResult | undefined {
-  if (body?.error_kind !== "context_missing" && body?.error !== "context_missing") return;
-  return { source, status: "error", reason: "context_missing", message: "この検索は前の検索の続きと判定され失敗しました。対象・担当者・期間などを明示した独立した質問で検索し直すか、他の取得済み結果で回答してください。この失敗を0件として扱わず、未取得の情報を明示してください。" };
+function skillRecoverableReadError(source: SearchSource, body: any, httpStatus: number): SkillSearchResult | undefined {
+  // Candidate/identity/permission decisions remain authoritative. Never let a
+  // generic read-plan clarification terminate the entire multi-search report.
+  if ([401,403].includes(httpStatus) || body?.status === "needs_account_selection" || body?.status === "needs_owner_selection" || ["account_candidates","owner_candidates","user_candidates","field_candidates","candidates"].some(key => Array.isArray(body?.[key]) && body[key].length > 0)) return;
+  const kind = body?.error_kind || body?.error;
+  if (!["context_missing","unsupported_condition","invalid_structure","context_conflict"].includes(kind) && body?.needs_clarification !== true) return;
+  if (["identity_unavailable","permission_denied","salesforce_denied","owner_scope_unavailable","local_connection_required"].includes(kind)) return;
+  return { source, status: "error", reason: typeof kind === "string" && ["context_missing","unsupported_condition","invalid_structure","context_conflict"].includes(kind) ? kind : "read_plan_clarification", httpStatus, message: "この個別検索はGatewayの読み取り判定で実行できませんでした。元の会社・社内担当営業・期間・段階などを維持し、独立した取得依頼に言い換えて検索し直すか、他の取得済み結果で回答を続けてください。件数だけの回答へ置き換えず、失敗を0件と扱わず、未取得の項目を明記してください。" };
+}
+
+function skillOwnerCandidates(source: SearchSource, body: any, httpStatus: number): SkillSearchResult | undefined {
+  if (httpStatus !== 200 && httpStatus !== 422) return;
+  const rows = Array.isArray(body?.owner_candidates) && body.owner_candidates.length ? body.owner_candidates : body?.user_candidates;
+  if (!Array.isArray(rows) || !rows.length) return;
+  const clean = (value: string) => value.replace(/[\r\n\\`*_[\]<>|]/g, " ").slice(0,120);
+  const candidates = rows.flatMap((row: any) => {
+    const name = row?.name ?? row?.Name;
+    const department = row?.department ?? row?.Department;
+    return typeof name === "string" && name.trim() ? [`- ${clean(name)}${typeof department === "string" && department ? `（${clean(department)}）` : ""}`] : [];
+  }).slice(0,10);
+  if (!candidates.length) return;
+  const text = "対象の社内担当営業の候補があります。氏名・部署を確認し、対象のフルネームと元の依頼を指定してください。候補を勝手に選択しません。\n\n" + candidates.join("\n");
+  return { source, status: "needs_confirmation", reason: "owner_selection_required", authoritativeText: text, message: text };
 }
 
 export function createSkillSearchTools(props: { email: string; threadId: string; signal: AbortSignal; userMessage: string; selectedAccount?: SelectedSearchAccount; selectedAccountRecord?: Record<string, unknown>; fiscalPeriod?: FiscalPeriod; documentSearch?: (query: string) => Promise<SkillSearchResult> }) {
   props = { ...props }; // Selection state belongs to this execution, never the caller's input.
+  const gatewayThread = skillGatewayThread(props.threadId);
   const confirmedAccount = props.selectedAccount;
   let calls = 0;
   let personal = personalSalesforceForEmail(props.email);
@@ -50,7 +72,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         });
       }
     } catch (error) {
-      result = { source, status: "error", reason: props.signal.aborted ? "cancelled" : error instanceof TypeError ? "invalid_input_or_connection" : error instanceof Error && error.message === "timeout" ? "timeout" : "connection_failed", message: "検索を完了できませんでした。接続失敗・タイムアウト等のため、データの有無は判断できません。" };
+      result = error instanceof SkillQueryContextError ? { source, status: "error", reason: error.reason, message: error.message } : { source, status: "error", reason: props.signal.aborted ? "cancelled" : error instanceof TypeError ? "invalid_input_or_connection" : error instanceof Error && error.message === "timeout" ? "timeout" : "connection_failed", message: "検索を完了できませんでした。接続失敗・タイムアウト等のため、データの有無は判断できません。" };
     }
     result = boundSearchResult(result);
     if (source === "documents" && Array.isArray(result.data)) {
@@ -65,6 +87,17 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
     if (source === "salesforce") {
       if (!isSalesforceAllowedEmail(props.email)) return { source, status: "denied", reason: "sf_whitelist_denied", message: "Salesforce参照権限がありません。" };
       const scope = resolveSkillSalesforceScope(suppliedScope, props.userMessage, suppliedCompany);
+      const accountChoice = (body: any): SkillSearchResult | undefined => {
+        if (!Array.isArray(body?.account_candidates) || !body.account_candidates.length) return;
+        const records = body.account_candidates.flatMap((item: any) => {
+          const id = item?.id ?? item?.Id, name = item?.name ?? item?.Name;
+          if (typeof id !== "string" || !/^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(id) || typeof name !== "string") return [];
+          return [{ Id:id, Name:name, BillingCity:item.billing_city ?? item.BillingCity, lightning_url:item.lightning_url }];
+        }).slice(0,50);
+        if (!records.length) return {source,status:"error",reason:"invalid_account_candidates",message:"取引先候補の形式を確認できませんでした。対象会社を確認してください。"};
+        contextResults.push(JSON.stringify({integration:"skill_search_account_candidates",observedAt:new Date().toISOString(),records}));
+        return {source,status:"needs_confirmation",data:records,truncated:Boolean(body.candidates_truncated) || body.account_candidates.length>50,message:JSON.stringify(salesforceReadMetadata(body))+"\n候補を利用者に確認してください。候補は0件ではありません。"};
+      };
       scope.period ??= props.fiscalPeriod ? { start: props.fiscalPeriod.fiscalStart, end: props.fiscalPeriod.fiscalEnd } : undefined;
       const operation = scope.target ?? (["accounts", "opportunities", "activities", "sales"].includes(String(suppliedOperation)) ? String(suppliedOperation) : /Sales__c|売上|受注合計/i.test(query) ? "sales" : /商談|Opportunity/i.test(query) ? "opportunities" : /活動履歴|活動一覧|Task|Event/i.test(query) ? "activities" : "accounts");
       if (!personal && props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) && (!suppliedOperation || suppliedOperation === "accounts") && isCompanyLookup(query)) {
@@ -112,21 +145,25 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
           const fiscalPeriod = typeof scope.period === "string" ? readFiscalPeriod(scope.period) ?? props.fiscalPeriod : scope.period ? { fiscalStart: scope.period.start, fiscalEnd: scope.period.end } : props.fiscalPeriod;
           if (typedOperation === "sales" && scope.period && !fiscalPeriod) throw new TypeError("売上の集計期間を確認してください。");
           const body = JSON.stringify({ operation: typedOperation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(typedOperation === "sales" ? fiscalPeriod : {}) });
-          const signed = personal ? await skillPersonalHeaders(target, props.email, props.threadId, "POST", body) : {};
-          const response = await fetch(target, { method: "POST", signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "Content-Type": "application/json", "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId, ...(!personal ? {"X-Skill-Read-Key": process.env.SF_SKILL_READ_KEY!} : {}) }, body });
+          const signed = personal ? await skillPersonalHeaders(target, props.email, gatewayThread, "POST", body) : {};
+          const response = await fetch(target, { method: "POST", signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "Content-Type": "application/json", "X-User-Email": props.email, "X-Chat-Thread-Id": gatewayThread, ...(!personal ? {"X-Skill-Read-Key": process.env.SF_SKILL_READ_KEY!} : {}) }, body });
           return verifiedResponse(response, signed);
         }
-        target.searchParams.set("q", personal ? buildSkillSalesforceQuery(buildSalesforceGatewayQuery(text), scope) : buildSalesforceGatewayQuery(text));
+        target.searchParams.set("q", buildSkillSalesforceQuery(buildSalesforceGatewayQuery(text), personal ? scope : {}, countQuery));
         if (props.selectedAccount) target.searchParams.set("account_id", props.selectedAccount.id);
-        const signed: Record<string, string> = personal ? await skillPersonalHeaders(target, props.email, props.threadId, "GET", "") : {};
+        const signed: Record<string, string> = personal ? await skillPersonalHeaders(target, props.email, gatewayThread, "GET", "") : {};
         if (personal && (signed["X-AC-Identity"]?.length ?? 0) > 3000) throw new TypeError("Salesforce search scope is too long");
-        const response = await fetch(target, { signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId } });
+        const response = await fetch(target, { signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "X-User-Email": props.email, "X-Chat-Thread-Id": gatewayThread } });
         return verifiedResponse(response, signed);
       };
       const response = await request(query);
       if (!response.ok) {
         const issue = await response.json().catch(() => null);
-        const contextMissing = skillContextMissing(source, issue);
+        const accountSelection = response.status === 422 ? accountChoice(issue) : undefined;
+        if (accountSelection) return accountSelection;
+        const ownerChoice = skillOwnerCandidates(source, issue, response.status);
+        if (ownerChoice) return ownerChoice;
+        const contextMissing = skillRecoverableReadError(source, issue, response.status);
         if (contextMissing) return contextMissing;
         const explanation = salesforceReadText(issue);
         if (explanation) return { source, status: response.status === 403 ? "denied" : issue?.needs_clarification ? "needs_confirmation" : "error", reason: issue?.error_kind || issue?.error, authoritativeText: explanation, message: explanation };
@@ -136,7 +173,11 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       }
       let body;
       try { body = await response.json(); } catch { return { source, status: "error", reason: "invalid_json_response" }; }
-      const contextMissing = skillContextMissing(source, body);
+      const accountSelection = accountChoice(body);
+      if (accountSelection) return accountSelection;
+      const ownerChoice = skillOwnerCandidates(source, body, response.status);
+      if (ownerChoice) return ownerChoice;
+      const contextMissing = skillRecoverableReadError(source, body, response.status);
       if (contextMissing) return contextMissing;
       const expectedObjects = { accounts: ["Account"], opportunities: ["Opportunity"], activities: ["Activity", "Task", "Event"], contacts: ["Contact"] };
       const expected = scope.target && scope.target in expectedObjects ? expectedObjects[scope.target as keyof typeof expectedObjects] : undefined;
@@ -145,11 +186,6 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       }
       const authoritativeText = salesforceReadText(body);
       if (authoritativeText) return { source, status: body.ok === false ? "error" : "ok", data: body.items || [], authoritativeText, message: `${authoritativeText}\n${JSON.stringify(salesforceReadMetadata(body))}\n${salesforceReadInstruction}` };
-      if (body.status === "needs_account_selection" && Array.isArray(body.account_candidates)) {
-        const records = body.account_candidates.map((item: any) => ({Id:item.id,Name:item.name,BillingCity:item.billing_city,lightning_url:item.lightning_url}));
-        contextResults.push(JSON.stringify({integration:"skill_search_account_candidates",observedAt:new Date().toISOString(),records}));
-        return { source, status: "needs_confirmation", data: records, truncated:Boolean(body.candidates_truncated), message: JSON.stringify(salesforceReadMetadata(body)) + "\n候補を利用者に確認してください。候補は0件ではありません。" };
-      }
       if (body.ok === false || body.error) return { source, status: "error", reason: "gateway_result_error", message: "Gatewayが検索を完了できませんでした。未対応条件の可能性もあるため0件とは扱わないでください。" };
       if (!Array.isArray(body.items)) return { source, status: "error", reason: "invalid_gateway_response", message: "Gatewayの検索結果形式を確認できませんでした。" };
       const company = scope.company;

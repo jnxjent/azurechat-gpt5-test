@@ -41,10 +41,25 @@ export function resolveSkillSalesforceScope(value: unknown, request: string, leg
   scope.period ??= original.match(/今期|前期|今月|先月|今年度|前年度|昨年度|上期|下期|\d{4}年度/)?.[0];
   return scope;
 }
-export function buildSkillSalesforceQuery(query: string, scope: SkillSalesforceScope): string {
+// Mirror core/nl_count_plan.py:wants_read_plan in sf-gateway commit
+// 561e7cfb1e3190b64fe43fe5a7c0614b82fe4374 (personal TestSite).
+// Synchronize this boundary whenever the Gateway routing changes.
+export function gatewayWantsReadPlan(q: string, hasContext = false): boolean {
+  if (/日報|活動|休眠|停滞|与信|廃棄|取引先責任者|商談|Opportunity|売上|締日|締め日|収集運搬|処分/i.test(q)) return false;
+  if (/では[、,\s]*質問を変え|ありがとう|ちょっと待って/.test(q)) return true;
+  const count = /数|何件|何名|何人|集計|カウント|(?<![A-Za-z0-9_])count(?![A-Za-z0-9_])/i.test(q);
+  if (!count && /住所|所在地|電話|連絡先|メール|FAX|ファックス/i.test(q)) return false;
+  if (hasContext && /そのうち|その中で|検索.*(?:くれた|した|対象|条件)|(?:先ほど|さっき|直前).*(?:条件|対象|範囲)/.test(q)) return true;
+  return count && /取引先|Account|ユーザ|User/i.test(q);
+}
+export class SkillQueryContextError extends TypeError {
+  readonly reason = "query_rephrase_required";
+  constructor() { super("一覧・属性の取得を件数検索の文脈に誤判定させる表現が含まれています。会社・担当営業・期間・段階・並び順を変更せず、独立した取得依頼に言い換えてください。件数取得と誤解される説明や前の検索への参照を避け、商談・活動など取得対象を明記してください。固有名詞や必要な条件を省略・改変して回避してはいけません。言い換えできなければ未取得と報告してください。" ); }
+}
+export function buildSkillSalesforceQuery(query: string, scope: SkillSalesforceScope, countPurpose = scope.target === "count"): string {
   const period = typeof scope.period === "string" ? scope.period : scope.period ? `${scope.period.start}～${scope.period.end}` : undefined;
   const labels = { accounts: "取引先", opportunities: "商談", activities: "活動", contacts: "連絡先", sales: "売上", count: "件数" };
-  const conditions = [scope.target && `種類: ${labels[scope.target]}`, scope.company && `会社: ${scope.company}`, scope.owner && `担当者: ${scope.owner}`, period && `期間: ${period}`].filter(Boolean).join(" / ");
+  const conditions = [scope.target && `種類: ${labels[scope.target]}`, scope.company && `会社: ${scope.company}`, scope.owner && `社内担当営業: ${scope.owner}`, period && `期間: ${period}`].filter(Boolean).join(" / ");
   // Reserve room for all structured conditions; never prepend the full report request.
   const suffix = conditions ? ` / ${conditions}` : "";
   let prefix = query.replace(/[\r\n\u0000-\u001f]/g, " ").trim().slice(0, Math.max(1, SKILL_SF_QUERY_LIMIT - suffix.length));
@@ -55,5 +70,7 @@ export function buildSkillSalesforceQuery(query: string, scope: SkillSalesforceS
   if (encodeURIComponent(suffix).length > 1300) throw new TypeError("Salesforce conditions are too long");
   while (prefix && encodeURIComponent(prefix + suffix).length > 1400) prefix = prefix.slice(0, -1).replace(/[\uD800-\uDBFF]$/, "");
   if (!prefix) throw new TypeError("Salesforce query is too long");
-  return prefix + suffix;
+  const result = prefix + suffix;
+  if (!countPurpose && (gatewayWantsReadPlan(result, true) || gatewayWantsReadPlan(result, false))) throw new SkillQueryContextError();
+  return result;
 }

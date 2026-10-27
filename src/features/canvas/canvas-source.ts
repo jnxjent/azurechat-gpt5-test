@@ -4,6 +4,7 @@ import { personalSalesforceBase, signSalesforceRequest, assertPersonalSalesforce
 import { validateCanvas,canvasMetadataSuggestions, type CanvasDocument } from "./canvas-rules";
 import {salesforceMonthlyReport,validAccountCandidates,type SalesforceAccount} from "@/features/common/services/salesforce-account-selection";
 import {buildSalesforceGatewayQuery} from "@/features/common/services/salesforce-routing";
+import { proofGatewayThread } from "@/features/common/services/salesforce-proof-thread";
 type CanvasShareUser = { principal: string; email: string };
 export type Source = { provider: "salesforce"; query: string; thread: string; proof: string; proofs?:string[];accountId?:string; savedCanvas?:{threadId:string;version:number} };
 export class CanvasSourceError extends Error {
@@ -54,7 +55,9 @@ async function revalidateSalesforce(source: Source, user: CanvasShareUser) {
     const proofs=Array.from(new Set(source.proofs??[source.proof]));
     if(!proofs.length || proofs.length>20)return false;
     for(const proof of proofs) {
-      const result = await gateway(user, "/api/sf/revalidate_shared", source.thread, JSON.stringify({ proof }));
+      const thread = proofGatewayThread(proof, source.thread);
+      if (!thread) return false;
+      const result = await gateway(user, "/api/sf/revalidate_shared", thread, JSON.stringify({ proof }));
       if(result.ok!==true || result.allowed!==true)return false;
     }
     return true;

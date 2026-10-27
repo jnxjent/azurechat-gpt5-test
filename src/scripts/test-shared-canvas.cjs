@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), ts = require('typescript');
 const tenant = '11111111-1111-1111-1111-111111111111';
 const users = ['a','b','c'].map((x,i) => ({ email: `${x}@example.com`, salesforcePrincipal: `${tenant}:${String(i+2).repeat(8)}-${String(i+2).repeat(4)}-${String(i+2).repeat(4)}-${String(i+2).repeat(4)}-${String(i+2).repeat(12)}` }));
-let user = users[0], allowed = true, sfVersion = 1, calls = 0, etag = 0, checkHook;
+let user = users[0], allowed = true, sfVersion = 1, calls = 0, etag = 0, checkHook, expectedProof, expectedThread;
 const records = new Map();
 const container = { items: { async create(item) { assert.equal(item.userId,'CANVAS_SHARE'); records.set(item.id,{...structuredClone(item),_etag:String(++etag)}); } }, item(id,partition) {
  assert.equal(partition,'CANVAS_SHARE'); return {
@@ -15,11 +15,20 @@ global.fetch=async(url,options)=>{
  calls++; const claim=JSON.parse(Buffer.from(options.headers['X-AC-Identity'],'base64url'));assert.equal(claim.principal,user.salesforcePrincipal);assert.equal(claim.email,user.email);assert.equal(url.origin,'https://gateway.example.com');
  const principal=claim.principal;let data;
  if(url.pathname==='/api/sf/query_nl') data={ok:true,snapshot_proof:'signed-source-proof',items:[{Name:'record-'+sfVersion,_instruction:'private-internal',attributes:{},nested:{secret:'private-internal'}}]};
- else {assert.equal(url.pathname,'/api/sf/revalidate_shared');assert.equal(options.method,'POST');assert.equal(JSON.parse(options.body).proof,'signed-source-proof');if(checkHook){const hook=checkHook;checkHook=null;await hook();}data={ok:true,allowed};}
+ else {assert.equal(url.pathname,'/api/sf/revalidate_shared');assert.equal(options.method,'POST');assert.equal(JSON.parse(options.body).proof,expectedProof||'signed-source-proof');if(expectedThread){assert.equal(claim.thread,expectedThread);assert.equal(options.headers['X-Chat-Thread-Id'],expectedThread);}if(checkHook){const hook=checkHook;checkHook=null;await hook();}data={ok:true,allowed};}
  return Response.json(data,{headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
 };
 async function main(){
  Object.assign(process.env,{NEXTAUTH_URL:'https://ac.example.com',SF_PERSONAL_MODE:'false',SF_PERSONAL_AUTH_METHOD:'oauth',SF_PERSONAL_SNAPSHOT_POLICY:'strict',SF_PERSONAL_SIGNING_KEY:'x'.repeat(40),SF_GATEWAY_BASE_URL:'https://shared.example.com',SF_PERSONAL_GATEWAY_BASE_URL:'https://gateway.example.com',CANVAS_SHARE_USERS_JSON:JSON.stringify(users.map(u=>({email:u.email,principal:u.salesforcePrincipal})))});
+ const {skillGatewayThread}=load('features/common/services/salesforce-proof-thread.ts');
+ const {revalidateCanvasSource}=load('features/canvas/canvas-source.ts');
+ expectedThread=skillGatewayThread('source-chat');expectedProof=Buffer.from(JSON.stringify({thread:expectedThread})).toString('base64url')+'.gateway-signature';
+ const scopedSource={provider:'salesforce',query:'read-only',thread:'source-chat',proof:expectedProof};
+ const viewer={principal:user.salesforcePrincipal,email:user.email};
+ assert.equal(await revalidateCanvasSource(scopedSource,viewer),true,'Shared sources retain isolated Skill proof contexts');
+ allowed=false;assert.equal(await revalidateCanvasSource(scopedSource,viewer),false,'Current viewer revocation still denies isolated proofs');allowed=true;
+ const beforeForeign=calls;assert.equal(await revalidateCanvasSource({...scopedSource,thread:'foreign-chat'},viewer),false);assert.equal(calls,beforeForeign,'Do not sign a context belonging to a different source chat');
+ expectedThread=undefined;expectedProof=undefined;
  const api=load('features/canvas/shared-canvas-service.ts');
  const created=await api.createSharedCanvas('私の取引先');const id=created.id;
  let result=await api.getSharedCanvas(id);assert.equal(result.owner,true);assert.ok(result.document.content.includes('record-1'));assert.ok(!JSON.stringify(result).includes('signed-source-proof'));assert.ok(!JSON.stringify(result).includes('private-internal'));

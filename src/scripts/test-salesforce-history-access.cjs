@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript');
 const root=path.resolve(__dirname,'..'),cache=new Map(),documents=new Map();
 const principal='11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';
-let messages=[],allowed=true,networkFails=false,requests=0,aiCalls=0,etag=0;
+let messages=[],allowed=true,networkFails=false,requests=0,aiCalls=0,etag=0,expectedGatewayThread;
 const owner='test-owner',thread='test-thread';
 const user={email:'a@example.com',salesforcePrincipal:principal};
 const container={items:{query(spec,options){
@@ -31,7 +31,8 @@ function load(relative){
 global.fetch=async(url,options)=>{
  requests++;if(networkFails)throw Error('offline');
  assert.equal(new URL(url).pathname,'/api/sf/revalidate');assert.equal(options.method,'POST');
- assert.equal(options.headers['X-User-Email'],user.email);assert.equal(options.headers['X-Chat-Thread-Id'],thread);
+ assert.equal(options.headers['X-User-Email'],user.email);assert.equal(options.headers['X-Chat-Thread-Id'],expectedGatewayThread||thread);
+ const claim=JSON.parse(Buffer.from(options.headers['X-AC-Identity'],'base64url'));assert.equal(claim.thread,options.headers['X-Chat-Thread-Id']);
  assert.ok(options.headers['X-AC-Identity']&&options.headers['X-AC-Signature']);
  return new Response(JSON.stringify({ok:true,allowed}),{headers:{'Content-Type':'application/json','X-SF-Connection-Mode':process.env.SF_PERSONAL_AUTH_METHOD==='oauth'?'personal-oauth':'personal-jwt','X-AC-Principal':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
 };
@@ -44,6 +45,20 @@ async function main(){
  };
  messages=[make('private sf answer',true)];
  assert.equal((await access.filterSalesforceHistory(messages,thread,owner))[0].content,'private sf answer');
+ const {skillGatewayThread,proofGatewayThread}=load('features/common/services/salesforce-proof-thread.ts');
+ const isolated=skillGatewayThread(thread),another=skillGatewayThread(thread);
+ assert.notEqual(isolated,thread);assert.notEqual(isolated,another);
+ const proofFor=value=>Buffer.from(JSON.stringify({v:2,thread:value})).toString('base64url')+'.gateway-signature';
+ assert.equal(proofGatewayThread(proofFor(isolated),thread),isolated);
+ assert.equal(proofGatewayThread(proofFor(isolated),'another-chat'),undefined);
+ assert.equal(proofGatewayThread(proofFor('another-chat'),thread),undefined);
+ const isolatedMessage=make('scoped private answer',true);isolatedMessage.salesforceSnapshot.proof=proofFor(isolated);isolatedMessage.historyAccess=access.sealHistoryMessage(isolatedMessage);
+ expectedGatewayThread=isolated;
+ assert.equal((await access.filterSalesforceHistory([isolatedMessage],thread,owner))[0].content,'scoped private answer');
+ allowed=false;assert.equal((await access.filterSalesforceHistory([isolatedMessage],thread,owner))[0].content,access.RESTRICTED_HISTORY);allowed=true;
+ const crossChat=make('foreign private answer',true);crossChat.salesforceSnapshot.proof=proofFor(skillGatewayThread('another-chat'));crossChat.historyAccess=access.sealHistoryMessage(crossChat);
+ const beforeForeign=requests;assert.equal((await access.filterSalesforceHistory([crossChat],thread,owner))[0].content,access.RESTRICTED_HISTORY);assert.equal(requests,beforeForeign,'Never sign a revalidation context belonging to another chat');
+ expectedGatewayThread=undefined;
  const firstRequests=requests;allowed=false;
  const hidden=(await access.filterSalesforceHistory(messages,thread,owner))[0];
  assert.equal(hidden.content,access.RESTRICTED_HISTORY);assert.ok(!JSON.stringify(hidden).includes('private sf answer'));assert.ok(requests>firstRequests,'permissions are rechecked after a prior success');

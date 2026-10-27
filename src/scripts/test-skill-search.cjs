@@ -65,7 +65,7 @@ async function main(){
  const bounded=policy.boundSearchResult({source:'salesforce',status:'ok',data:Array.from({length:80},()=>({text:'あ'.repeat(300)}))});assert.equal(bounded.truncated,true);assert.ok(Buffer.byteLength(JSON.stringify(bounded))<=16000);
  let t=createSkillSearchTools(props);allowed=false;assert.equal((await t.execute('salesforce','会社')).status,'denied');assert.equal(fetched.length,0);allowed=true;
  for(const [mode,status] of [['empty','empty'],['denied','denied'],['error','error'],['malformed','error'],['throw','error'],['ok','ok']]){fetchMode=mode;t=createSkillSearchTools(props);const r=await t.execute('salesforce','取引先の検証会社について教えて');assert.equal(r.status,status);assert.ok(!JSON.stringify(r).includes('private'));}
- assert.equal(fetched.at(-1).options.headers['X-User-Email'],'user@test');assert.equal(fetched.at(-1).options.headers['X-Chat-Thread-Id'],'thread-1');assert.equal(fetched.at(-1).url.pathname,'/api/sf/query_nl');assert.equal(fetched.at(-1).url.searchParams.get('mode'),'real');
+ assert.equal(fetched.at(-1).options.headers['X-User-Email'],'user@test');assert.match(fetched.at(-1).options.headers['X-Chat-Thread-Id'],/^skill-read-v1:/);assert.notEqual(fetched.at(-1).options.headers['X-Chat-Thread-Id'],'thread-1');assert.equal(fetched.at(-1).url.pathname,'/api/sf/query_nl');assert.equal(fetched.at(-1).url.searchParams.get('mode'),'real');
  const beforeMissing=fetched.length;delete process.env.SF_GATEWAY_BASE_URL;t=createSkillSearchTools(props);assert.equal((await t.execute('salesforce','会社')).status,'unavailable');assert.equal(fetched.length,beforeMissing);process.env.SF_GATEWAY_BASE_URL='https://gateway.test';
  const stopped=new AbortController();stopped.abort();t=createSkillSearchTools({...props,signal:stopped.signal});assert.equal((await t.execute('salesforce','会社')).status,'error');assert.equal(fetched.length,beforeMissing);
  docIdentity=false;t=createSkillSearchTools(props);assert.equal((await t.execute('documents','規程')).status,'denied');assert.equal(docCalls.length,0);docIdentity=true;
@@ -98,14 +98,14 @@ async function main(){
  fetchQueue=[invalid,invalid];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','取引先のJ&T環境株式会社を検索')).status,'error');
  fetchQueue=[invalid];t=createSkillSearchTools(props);assert.equal((await t.execute('salesforce','取引先を検索')).status,'error');
  countBefore=fetched.length;fetchQueue=[invalid];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','私の取引先のJ&T環境株式会社を検索')).status,'error');assert.equal(fetched.length,countBefore+1);
- fetchQueue=[{ok:true,object:'Account',items:[],total_count:0},candidates];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','J&T環境株式会社のAccountを検索')).status,'needs_confirmation');
- fetchQueue=[{ok:true,object:'Account',items:[],total_count:0},{ok:true,object:'Account',items:[],total_count:0}];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','J&T環境株式会社のAccountを検索')).status,'empty');
- fetchQueue=[{ok:true,object:'Account',items:[{Name:'別の会社株式会社'}],total_count:1}];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','J&T環境株式会社のAccountを検索')).status,'error');
+ fetchQueue=[{ok:true,object:'Account',items:[],total_count:0},candidates];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','J&T環境株式会社の取引先を検索')).status,'needs_confirmation');
+ fetchQueue=[{ok:true,object:'Account',items:[],total_count:0},{ok:true,object:'Account',items:[],total_count:0}];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','J&T環境株式会社の取引先を検索')).status,'empty');
+ fetchQueue=[{ok:true,object:'Account',items:[{Name:'別の会社株式会社'}],total_count:1}];t=createSkillSearchTools(companyProps);assert.equal((await t.execute('salesforce','J&T環境株式会社の取引先を検索')).status,'error');
  fetchQueue=[{ok:true,object:'Account',items:[{Id:'001a',Name:'J&T環境株式会社'},{Id:'001b',Name:'別の会社株式会社'}],total_count:2}];t=createSkillSearchTools(companyProps);
- const partialAccounts=await t.execute('salesforce','J&T環境株式会社のAccountを検索');assert.equal(partialAccounts.status,'ok');assert.equal(partialAccounts.excludedCount,1);assert.equal(partialAccounts.truncated,true);
+ const partialAccounts=await t.execute('salesforce','J&T環境株式会社の取引先を検索');assert.equal(partialAccounts.status,'ok');assert.equal(partialAccounts.excludedCount,1);assert.equal(partialAccounts.truncated,true);
  fetchQueue=[{ok:true,object:'Opportunity',items:[{Id:'006a',AccountId:'001a'},{Id:'006b'},{Id:'006c',AccountId:'001b'}],total_count:100}];t=createSkillSearchTools({...companyProps,selectedAccount:{id:'001a',name:'J&T環境株式会社'}});
  const partialOpportunities=await t.execute('salesforce','選択先の商談を取得');assert.equal(partialOpportunities.status,'ok');assert.equal(partialOpportunities.excludedCount,2);assert.deepEqual(partialOpportunities.data.map(i=>i.Id),['006a']);assert.equal(partialOpportunities.reason,'partial_verified_results');
- fetchQueue=[candidates];t=createSkillSearchTools({...companyProps,selectedAccount:{id:'001a',name:'Ｊ＆Ｔ環境株式会社'}});const chosen=await t.execute('salesforce','J&T環境株式会社のAccountを検索');assert.equal(chosen.status,'ok');assert.deepEqual(chosen.data.map(i=>i.Id),['001a']);
+ fetchQueue=[candidates];t=createSkillSearchTools({...companyProps,selectedAccount:{id:'001a',name:'Ｊ＆Ｔ環境株式会社'}});const chosen=await t.execute('salesforce','J&T環境株式会社の取引先を検索');assert.equal(chosen.status,'ok');assert.deepEqual(chosen.data.map(i=>i.Id),['001a']);
  fetchQueue=[{ok:true,object:'Opportunity',items:[{Id:'006a',Name:'同名の別拠点商談'}]}];t=createSkillSearchTools({...companyProps,selectedAccount:{id:'001a',name:'Ｊ＆Ｔ環境株式会社'}});assert.equal((await t.execute('salesforce','J&T環境株式会社の商談を検索')).status,'error');
  const choiceHistory=[{role:'user',content:'Skill「訪問準備」を使って、J&T環境株式会社を調べて'},{role:'assistant',content:'対象を選択してください。\n1. J&T環境株式会社 — [Salesforceで確認](https://example.sandbox.lightning.force.com/lightning/r/Account/001RA00000rKdLGYA0/view)\n参照したSkill: 訪問準備 v1'}];
  assert.equal(continuation.resolveSkillSearchChoice('1',choiceHistory).account.id,'001RA00000rKdLGYA0');
@@ -214,7 +214,7 @@ async function main(){
  fetchQueue=[{ok:true,object:'Account',items:[],count:0,total_count:47846,aggregation_result:{func:'COUNT',value:47846,source:'soql_count',scope:'all'},resolved_fields:[{label:'請求先',api_name:'BillingFlag__c'}],context_applied:{applied:true}}];
  const exactCount=await createSkillSearchTools({...props,userMessage:'取引先の件数'}).execute('salesforce','取引先の件数');
  assert.equal(exactCount.status,'ok');assert.ok(exactCount.authoritativeText.includes('47,846'));assert.ok(exactCount.message.includes('resolved_fields'));assert.ok(exactCount.message.includes('context_applied'));
- fetchQueue=[{ok:true,status:'needs_account_selection',items:[],account_candidates:[{id:'001a',name:'会社A'}],zero_reason:'account_ambiguous'}];
+ fetchQueue=[{ok:true,status:'needs_account_selection',items:[],account_candidates:[{id:'001000000000001AAA',name:'会社A',lightning_url:'https://test.sandbox.lightning.force.com/lightning/r/Account/001000000000001AAA/view'}],zero_reason:'account_ambiguous'}];
  const ambiguous=await createSkillSearchTools({...props,userMessage:'取引先の件数'}).execute('salesforce','取引先の件数');
  assert.equal(ambiguous.status,'needs_confirmation');assert.ok(ambiguous.message.includes('account_ambiguous'));
  fetchQueue=[{ok:true,object:'Account',items:[],aggregation_result:{func:'COUNT',value:6530,scope:'all',source:'soql_count'}}];

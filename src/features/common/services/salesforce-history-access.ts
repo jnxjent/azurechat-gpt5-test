@@ -7,6 +7,7 @@ import type { ChatMessageModel } from "@/features/chat-page/chat-services/models
 import { validateCanvas, type CanvasDocument } from "@/features/canvas/canvas-rules";
 import { readFileSync } from "node:fs";
 import { isPersonalSalesforceUser, personalSalesforceBase } from "./salesforce-personal";
+import { proofGatewayThread } from "./salesforce-proof-thread";
 
 export const RESTRICTED_HISTORY = "現在のSalesforce権限で再検証できないため、この保存済み回答は表示していません。必要なデータを改めて検索してください。";
 export type HistoryAccess = { v: 1; owner: string; thread: string; role: string; hash: string; sf: boolean; proof: string | null; dependencies?: string[]; signature: string };
@@ -59,9 +60,11 @@ async function checkProofs(proofs: string[], thread: string) {
     const user = await getCurrentUser();
     const base = personalSalesforceBase();
     for (const proof of distinct) {
+      const gatewayThread = proofGatewayThread(proof, thread);
+      if (!gatewayThread) return false;
       const url = new URL("/api/sf/revalidate", base), body = JSON.stringify({ proof });
-      const headers = await salesforcePersonalHeaders(url, user.email, thread, "POST", body);
-      const response = await fetch(url, { method: "POST", body, headers: { ...headers, "Content-Type": "application/json", "X-User-Email": user.email.trim().toLowerCase(), "X-Chat-Thread-Id": thread }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(30000) });
+      const headers = await salesforcePersonalHeaders(url, user.email, gatewayThread, "POST", body);
+      const response = await fetch(url, { method: "POST", body, headers: { ...headers, "Content-Type": "application/json", "X-User-Email": user.email.trim().toLowerCase(), "X-Chat-Thread-Id": gatewayThread }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(30000) });
       if (!response.ok) return false;
       assertPersonalSalesforceResponse(response, headers);
       const result = await response.json();

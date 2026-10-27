@@ -16,7 +16,7 @@ import { resolveSkillSalesforceScope } from "./skill-salesforce-scope";
 
 const sources: SearchSource[] = ["salesforce", "web", "documents"];
 const tools: ChatCompletionTool[] = sources.map(source => ({ type: "function", function: {
-  name: `skill_search_${source}`, description: source === "salesforce" ? "既存Salesforce Gatewayの本人権限による読み取り検索。商談・活動等を一つの目的ごとに自然文で指定し、会社・担当者・期間・対象を項目で渡す。会社名は略称も可。担当者の依頼を取引先検索や本人所有分へ置き換えない。会社単位の売上は取引先確定が必要。SOQLを直接送らない。" : source === "web" ? "公開Web情報・最新ニュースを検索する。社内の非公開情報や個人情報を検索語に含めない。" : "本人が閲覧できる社内資料・スレッド添付を検索する。規程、マニュアル、FAQ、会議資料等。",
+  name: `skill_search_${source}`, description: source === "salesforce" ? "既存Salesforce Gatewayの本人権限による読み取り検索。商談・活動等を一つの目的ごとに自然文で指定し、会社・社内担当営業・期間・対象を項目で渡す。会社名は略称も可。担当者の依頼を取引先検索や本人所有分へ置き換えない。会社単位の売上は取引先確定が必要。SOQLを直接送らない。件数取得と誤解される説明や前の検索への参照を避け、商談・活動など取得対象を明記してください。Accountは取引先と書く。会社名・担当者名や実際の条件を省略・変更して回避しない。件数を求める時だけtarget=countを指定する。" : source === "web" ? "公開Web情報・最新ニュースを検索する。社内の非公開情報や個人情報を検索語に含めない。" : "本人が閲覧できる社内資料・スレッド添付を検索する。規程、マニュアル、FAQ、会議資料等。",
   parameters: { type: "object", properties: { query: { type: "string", maxLength: 600, description: "今回の個別検索だけを書く。例: 商談一覧を検索。レポート依頼全体を繰り返さず、段階などの追加条件はこの文に保持する。" }, ...(source === "salesforce" ? {
     company: { type: "string", maxLength: 120, description: "今回の依頼文にある会社名・略称。そのまま抽出し、法人格を補わない。" },
     owner: { type: "string", maxLength: 80, description: "担当者名。例: 黄。指定なしは省略し、本人に置き換えない。" },
@@ -94,7 +94,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     // A single verified discovery result is sufficient to continue without another user turn.
     // Account choices from stored history are always fetched again in personal mode.
     if (props.selectedAccount && personal) {
-      const current = await search.execute("salesforce", "Account基本情報", undefined, "accounts");
+      const current = await search.execute("salesforce", "取引先基本情報", undefined, "accounts");
       if (current.status !== "ok") {
         cleanup();
         return { runner: undefined, directContent: "選択した取引先の現在の閲覧権限を確認できませんでした。改めて会社名から検索してください。", citationResults: [], salesforceSnapshot: search.salesforceSnapshot };
@@ -107,7 +107,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
         // Let the model preserve stage and other task-specific conditions in its
         // individual query, rather than prefetching an unfiltered personal list.
         if (personal && operation !== "sales") continue;
-        const label = { accounts: "Account基本情報", opportunities: "商談を金額降順で上位10件", activities: "活動履歴を日付降順で最新10件", sales: "Sales__cの請求先照合・売上集計と直近売上" }[operation] ?? operation;
+        const label = { accounts: "取引先基本情報", opportunities: "商談を金額降順で上位10件", activities: "活動履歴を日付降順で最新10件", sales: "Sales__cの請求先照合・売上集計と直近売上" }[operation] ?? operation;
         const result = await search.execute("salesforce", label, undefined, operation);
         coverage.push({ operation, status: result.status, reason: result.reason, count: Array.isArray(result.data) ? result.data.length : undefined, truncated: result.truncated, queryCount: result.queryCount });
         messages.push({ role: "system", content: "サーバーがSkill要求に基づき実行済みの検索。重複検索せずこの結果を使用する。operation=" + operation + "\n" + JSON.stringify(result) });

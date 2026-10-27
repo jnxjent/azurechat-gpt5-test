@@ -6,7 +6,7 @@ const {createHash} = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const principal = '11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';
 const actor = {email:'owner@example.test',salesforcePrincipal:principal};
-let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[], planned=[], catalog=[];
+let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[], planned=[], catalog=[], issueQueue=[];
 const stubs = {
   'server-only':{},
   '@/features/canvas/canvas-actor':{getCanvasActor:async()=>currentActor,withCanvasActor:(_actor,fn)=>fn()},
@@ -38,6 +38,10 @@ function load(file) {
 Object.assign(process.env,{SF_PERSONAL_MODE:'true',SF_PERSONAL_SCOPE:'whitelist',SF_PERSONAL_SNAPSHOT_POLICY:'strict',SF_PERSONAL_AUTH_METHOD:'oauth',SF_PERSONAL_SIGNING_KEY:'test-key-'.repeat(8),SF_PERSONAL_GATEWAY_BASE_URL:'https://personal.test',SF_GATEWAY_BASE_URL:'https://shared.test',SF_SKILL_READ_BASE_URL:'https://legacy.test',SF_PERSONAL_USERS_JSON:JSON.stringify([actor.principal?actor:{principal,email:actor.email}])});
 global.fetch=async(url,options)=>{
   const target=new URL(url);fetches.push({target,options});
+  if(issueQueue.length) {
+    const {body,status}=issueQueue.shift();
+    return Response.json(body,{status,headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
+  }
   if(mode==='invalid-company')return Response.json({ok:false,error:'invalid_company'},{status:400});
   if(mode==='context-missing-422' || mode==='context-missing-200')return Response.json({ok:false,error:'context_missing',error_kind:'context_missing',needs_clarification:true,message:'引き継ぐ件数検索の条件がありません。対象と条件を含めて質問してください。'},{status:mode==='context-missing-422'?422:200,headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
   const q=target.searchParams.get('q') || '';
@@ -48,7 +52,8 @@ global.fetch=async(url,options)=>{
 const {createSkillSearchTools}=load('features/skills/execution/skill-search-tools.ts');
 const {mergeSkillSnapshots}=load('features/skills/execution/skill-personal-access.ts');
 const {runSkillSearch}=load('features/skills/execution/skill-search-runner.ts');
-const {resolveSkillSalesforceScope,buildSkillSalesforceQuery}=load('features/skills/execution/skill-salesforce-scope.ts');
+const {resolveSkillSalesforceScope,buildSkillSalesforceQuery,gatewayWantsReadPlan}=load('features/skills/execution/skill-salesforce-scope.ts');
+const {proofGatewayThread}=load('features/common/services/salesforce-proof-thread.ts');
 const continuationPattern=/そのうち|その中で|検索.*(?:くれた|した|対象|条件)|(?:先ほど|さっき|直前).*(?:条件|対象|範囲)/;
 for(const target of [undefined,'accounts','opportunities','activities','contacts','sales','count'])
   for(const company of [undefined,'Example株式会社'])
@@ -58,8 +63,19 @@ for(const target of [undefined,'accounts','opportunities','activities','contacts
         assert.equal(continuationPattern.test(q),false,q);
         assert.ok(q.startsWith('黄さんが担当する取引先を検索'));
         if(target)assert.ok(q.includes('種類: '));
+        if(target!=='count')for(const hasContext of [false,true])assert.equal(gatewayWantsReadPlan(q,hasContext),false,JSON.stringify({q,hasContext}));
       }
-assert.ok(buildSkillSalesforceQuery('さっきの検索条件で取引先を検索',{target:'accounts'}).startsWith('さっきの検索条件で取引先を検索'),'Preserve user-authored continuation semantics');
+for(const query of ['取引先の数ではなく一覧','複数の取引先を取得','さっきの検索条件で取引先を検索','その中で取引先を取得','取引先を集計','取引先を検索した対象'])assert.throws(()=>buildSkillSalesforceQuery(query,{target:'accounts'}),/独立した取得依頼/);
+for(const query of ['Accountの一覧','先ほどの取引先','直前の取引先','数研株式会社の商談','そのうち商談を取得','数量と数値を含む活動','複数の商談を取得']) {
+  for(const hasContext of [false,true])assert.equal(gatewayWantsReadPlan(query,hasContext),false,query);
+  assert.ok(buildSkillSalesforceQuery(query,{}).startsWith(query));
+}
+assert.equal(gatewayWantsReadPlan('その中で取引先を取得',false),false);
+assert.equal(gatewayWantsReadPlan('その中で取引先を取得',true),true);
+assert.equal(gatewayWantsReadPlan('ありがとう',false),true);
+assert.equal(gatewayWantsReadPlan('count Account',false),true);
+assert.throws(()=>buildSkillSalesforceQuery('取引先を取得',{target:'accounts',company:'数研株式会社'}),/固有名詞/,'Do not silently alter literal company names to evade routing');
+assert.ok(buildSkillSalesforceQuery('取引先の件数',{target:'count'}).includes('件数'));
 assert.equal(resolveSkillSalesforceScope(undefined,'A社様の商談').owner,undefined);
 assert.equal(resolveSkillSalesforceScope(undefined,'お客様の声').owner,undefined);
 assert.equal(resolveSkillSalesforceScope(undefined,'A社さんの商談').owner,undefined);
@@ -75,13 +91,16 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   assert.equal(fetches[0].target.origin,'https://personal.test');
   assert.equal(fetches[0].target.pathname,'/api/sf/query_nl');
   assert.equal(fetches[0].options.headers['X-Skill-Read-Key'],undefined);
-  assert.equal(fetches[0].options.headers['X-Chat-Thread-Id'],'owned-thread');
+  const firstGatewayThread=fetches[0].options.headers['X-Chat-Thread-Id'];
+  assert.notEqual(firstGatewayThread,'owned-thread');assert.equal(proofGatewayThread(Buffer.from(JSON.stringify({thread:firstGatewayThread})).toString('base64url')+'.signature','owned-thread'),firstGatewayThread);
   const claim=JSON.parse(Buffer.from(fetches[0].options.headers['X-AC-Identity'],'base64url'));
   assert.equal(claim.principal,principal);assert.equal(claim.method,'GET');
+  assert.equal(claim.thread,firstGatewayThread);
   assert.equal(claim.body,createHash('sha256').update('').digest('hex'));
   assert.deepEqual(tool.salesforceSnapshot.proofs,['proof-for-accounts']);
   mode='no-proof';
   await tool.execute('salesforce','Exampleの取引先を検索','Example','accounts');
+  assert.equal(fetches.at(-1).options.headers['X-Chat-Thread-Id'],firstGatewayThread,'One execution keeps its Gateway context for its related reads');
   assert.deepEqual(tool.salesforceSnapshot.proofs,[],'One missing proof must protect the entire saved answer');
   assert.deepEqual(mergeSkillSnapshots({orgId:'org',userId:'user',retrievedAt:'now',proof:'a'},{orgId:'org',userId:'other',retrievedAt:'now',proof:'b'}).proofs,[]);
   mode='wrong-person';
@@ -116,7 +135,7 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
     const sent=fetches.at(-1);
     assert.equal(sent.target.pathname,'/api/sf/query_nl','Company-less employee searches must not use the fixed self-owner typed endpoint');
     assert.equal(sent.options.method,undefined);
-    assert.ok(sent.target.searchParams.get('q').includes('担当者: 黄'),'Preserve requested employee even when the tool query omits the name');
+    assert.ok(sent.target.searchParams.get('q').includes('社内担当営業: 黄'),'Preserve requested employee even when the tool query omits the name');
     assert.ok(sent.target.searchParams.get('q').startsWith('担当営業の'),'Individual search comes before report context');
     assert.ok(!sent.target.searchParams.get('q').includes('Skill「'));
     const signed=JSON.parse(Buffer.from(sent.options.headers['X-AC-Identity'],'base64url'));
@@ -171,7 +190,7 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   assert.equal(fetches.at(-1).target.pathname,'/api/sf/query_nl','Extra conditions must not disappear into fixed queries');
   const long=createSkillSearchTools({...props,userMessage:'黄さんの今期の商談'+ 'あ'.repeat(5000)});
   await long.execute('salesforce','商談一覧を検索'+ '詳'.repeat(580),undefined,undefined,{owner:'黄',period:'今期',target:'opportunities'});
-  sent=fetches.at(-1);q=sent.target.searchParams.get('q');assert.ok(q.length<=500);assert.ok(q.startsWith('商談一覧を検索'));assert.ok(q.includes('担当者: 黄'));assert.ok(q.includes('期間: 今期'));
+  sent=fetches.at(-1);q=sent.target.searchParams.get('q');assert.ok(q.length<=500);assert.ok(q.startsWith('商談一覧を検索'));assert.ok(q.includes('社内担当営業: 黄'));assert.ok(q.includes('期間: 今期'));
   const signed=JSON.parse(Buffer.from(sent.options.headers['X-AC-Identity'],'base64url'));
   assert.ok(sent.options.headers['X-AC-Identity'].length<=3000,'Percent-encoded Japanese must fit the Gateway identity limit');
   assert.equal(signed.target,sent.target.pathname+sent.target.search);
@@ -181,7 +200,7 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   const forwardStart=fetches.length;
   planned=[{role:'assistant',content:null,tool_calls:[{id:'call-scope',type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query:'商談一覧を検索',company:'トヨタ',owner:'黄',period:'今期',target:'opportunities'})}}]}];
   await runSkillSearch({...runnerProps,message:'黄さんの担当するトヨタの今期の商談',originalRequest:'黄さんの担当するトヨタの今期の商談',selectedAccount:undefined,selectedAccountRecord:undefined});
-  assert.equal(fetches.length,forwardStart+1);q=fetches.at(-1).target.searchParams.get('q');assert.ok(q.includes('会社: トヨタ') && q.includes('担当者: 黄') && q.includes('期間: 今期'));
+  assert.equal(fetches.length,forwardStart+1);q=fetches.at(-1).target.searchParams.get('q');assert.ok(q.includes('会社: トヨタ') && q.includes('社内担当営業: 黄') && q.includes('期間: 今期'));
   for(const failureMode of ['context-missing-422','context-missing-200']) {
     mode=failureMode;
     const failedSearch=await createSkillSearchTools(props).execute('salesforce','取引先を検索',undefined,undefined,{target:'accounts'});
@@ -198,6 +217,35 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
     assert.equal(JSON.parse(toolResult.content).status,'error');
     assert.equal(JSON.parse(toolResult.content).authoritativeText,undefined);
   }
+  mode='ok';
+  for(const status of [200,422])for(const reason of ['context_missing','unsupported_condition','invalid_structure','context_conflict',undefined]) {
+    const body={ok:false,needs_clarification:true,...(reason?{error:reason,error_kind:reason}:{}),clarification:'件数カウントとしては実行できません。'};
+    issueQueue=[{body,status}];
+    const issue=await createSkillSearchTools(props).execute('salesforce','取引先を取得',undefined,undefined,{target:'accounts'});
+    assert.equal(issue.status,'error');assert.equal(issue.reason,reason||'read_plan_clarification');assert.equal(issue.authoritativeText,undefined);
+    issueQueue=[{body,status}];planning=[];
+    const call=(id,query,target)=>({role:'assistant',content:null,tool_calls:[{id,type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query,target})}}]});
+    planned=[call('recoverable','取引先を取得','accounts'),call('successful','商談を取得','opportunities')];
+    const before=fetches.length;
+    const recovered=await runSkillSearch({...runnerProps,selectedAccount:undefined,selectedAccountRecord:undefined,history:[]});
+    assert.equal(recovered.directContent,undefined);assert.ok(recovered.runner);assert.equal(fetches.length,before+2);
+    const results=planning.at(-1).messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content));
+    assert.equal(results[0].status,'error');assert.equal(results[1].reason,'query_completed');
+    const runThreads=fetches.slice(before).map(f=>f.options.headers['X-Chat-Thread-Id']);assert.equal(new Set(runThreads).size,1);assert.notEqual(runThreads[0],'owned-thread');
+  }
+  issueQueue=[{status:422,body:{ok:false,error:'unsupported_condition',needs_clarification:true,owner_candidates:[{name:'黄 一郎',department:'営業一課'},{name:'黄 二郎',department:'営業二課'}]}}];
+  const ownerChoice=await createSkillSearchTools(props).execute('salesforce','取引先を取得',undefined,undefined,{target:'accounts'});
+  assert.equal(ownerChoice.status,'needs_confirmation');assert.ok(ownerChoice.authoritativeText.includes('黄 一郎'));assert.ok(ownerChoice.authoritativeText.includes('黄 二郎'));
+  for(const status of [200,422]) {
+    issueQueue=[{status,body:{ok:true,status:'needs_account_selection',needs_clarification:true,account_candidates:[{id:'001000000000001AAA',name:'Example',lightning_url:'https://test.sandbox.lightning.force.com/lightning/r/Account/001000000000001AAA/view'}]}}];
+    const candidateTools=createSkillSearchTools(props);
+    const candidate=await candidateTools.execute('salesforce','取引先を取得',undefined,undefined,{target:'accounts'});
+    assert.equal(candidate.status,'needs_confirmation');assert.equal(candidate.data[0].Id,'001000000000001AAA');
+    assert.ok(candidateTools.contextResults.some(v=>v.includes('skill_search_account_candidates')));
+  }
+  const beforeUnsafe=fetches.length;
+  const unsafe=await createSkillSearchTools(props).execute('salesforce','複数の取引先を取得',undefined,undefined,{target:'accounts'});
+  assert.equal(unsafe.reason,'query_rephrase_required');assert.equal(fetches.length,beforeUnsafe);
   mode='ok';planning=[];
   const lookupMessage='黄さんの最近の営業進捗をまとめて';
   const lookupCall={role:'assistant',content:null,tool_calls:[{id:'lookup-owner',type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query:'黄さんの商談一覧を検索',owner:'黄',target:'opportunities'})}}]};
@@ -206,7 +254,7 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   assert.deepEqual(planning[0].tool_choice,{type:'function',function:{name:'skill_search_salesforce'}},'A short owner name must trigger a lookup even with empty Teams history and no period');
   assert.equal(planning[1].tool_choice,undefined,'Only the initial lookup is required; subsequent clarification is allowed');
   q=fetches.at(-1).target.searchParams.get('q');
-  assert.ok(q.includes('担当者: 黄'));assert.ok(!q.includes('期間:'),'Do not invent a date range for 最近');
+  assert.ok(q.includes('社内担当営業: 黄'));assert.ok(!q.includes('期間:'),'Do not invent a date range for 最近');
   for(const message of ['A社様の情報をまとめて','黄さんの営業進捗。Salesforceは使用しない。','Web情報だけで黄さんの営業進捗をまとめて']) {
     planning=[];planned=[];
     await runSkillSearch({...runnerProps,message,originalRequest:message,history:[],selectedAccount:undefined,selectedAccountRecord:undefined});
@@ -224,8 +272,9 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   const teamsReply=await handleTeamsSkill({...teamsProps,activityId:'execute-lookup',message:'',value:suggestion.card.actions[0].data});
   assert.ok(teamsReply.text.includes('取得できた営業進捗'));assert.equal(fetches.length,beforeTeamsLookup+1);
   assert.deepEqual(planning[0].tool_choice,{type:'function',function:{name:'skill_search_salesforce'}});
-  assert.ok(fetches.at(-1).target.searchParams.get('q').includes('担当者: 黄'));
-  assert.equal(fetches.at(-1).options.headers['X-Chat-Thread-Id'],'teams-verified-conversation');
+  assert.ok(fetches.at(-1).target.searchParams.get('q').includes('社内担当営業: 黄'));
+  const teamsGatewayThread=fetches.at(-1).options.headers['X-Chat-Thread-Id'];assert.notEqual(teamsGatewayThread,'teams-verified-conversation');
+  const teamsClaim=JSON.parse(Buffer.from(fetches.at(-1).options.headers['X-AC-Identity'],'base64url'));assert.equal(teamsClaim.thread,teamsGatewayThread);
   planning=[];mode='denied';
   const failed=await runSkillSearch(runnerProps);
   assert.equal(failed.runner,undefined);assert.ok(failed.directContent.includes('閲覧権限'));
