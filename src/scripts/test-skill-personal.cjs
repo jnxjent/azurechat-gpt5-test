@@ -6,10 +6,12 @@ const {createHash} = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const principal = '11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';
 const actor = {email:'owner@example.test',salesforcePrincipal:principal};
-let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[], planned=[];
+let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[], planned=[], catalog=[];
 const stubs = {
   'server-only':{},
-  '@/features/canvas/canvas-actor':{getCanvasActor:async()=>currentActor},
+  '@/features/canvas/canvas-actor':{getCanvasActor:async()=>currentActor,withCanvasActor:(_actor,fn)=>fn()},
+  '@/features/skills/skill-service':{listActorSkills:async()=>catalog},
+  './teams-search-service':{},
   '@/features/common/services/salesforce-access':{isSalesforceAllowedEmail:()=>allowed},
   './salesforce-access':{isSalesforceAllowedEmail:()=>allowed},
   '@/features/common/services/salesforce-routing':{buildSalesforceGatewayQuery:q=>q},
@@ -19,7 +21,7 @@ const stubs = {
   '@/features/teams/teams-brave-search-service':{isTeamsBraveSearchConfigured:()=>false},
   '@/features/common/services/openai': {OpenAIInstance: () => ({
     chat: {completions: {create: async p => {planning.push(p); return {choices:[{message:planned.shift() ?? {role:'assistant',content:'ready'}}]};}}},
-    beta: {chat: {completions: {stream: () => {const e = new EventEmitter(); setImmediate(()=>e.emit('end'));return e;}}}},
+    beta: {chat: {completions: {stream: () => {const e = new EventEmitter(); e.finalChatCompletion=async()=>({choices:[{message:{content:'取得できた営業進捗。期間が必要な分析は未取得。'}}]});setImmediate(()=>e.emit('end'));return e;}}}},
   })},
 };
 const cache = new Map();
@@ -196,6 +198,34 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
     assert.equal(JSON.parse(toolResult.content).status,'error');
     assert.equal(JSON.parse(toolResult.content).authoritativeText,undefined);
   }
+  mode='ok';planning=[];
+  const lookupMessage='黄さんの最近の営業進捗をまとめて';
+  const lookupCall={role:'assistant',content:null,tool_calls:[{id:'lookup-owner',type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query:'黄さんの商談一覧を検索',owner:'黄',target:'opportunities'})}}]};
+  planned=[lookupCall];
+  await runSkillSearch({...runnerProps,chatThread:{id:'teams-empty-history'},message:lookupMessage,originalRequest:lookupMessage,history:[],selectedAccount:undefined,selectedAccountRecord:undefined});
+  assert.deepEqual(planning[0].tool_choice,{type:'function',function:{name:'skill_search_salesforce'}},'A short owner name must trigger a lookup even with empty Teams history and no period');
+  assert.equal(planning[1].tool_choice,undefined,'Only the initial lookup is required; subsequent clarification is allowed');
+  q=fetches.at(-1).target.searchParams.get('q');
+  assert.ok(q.includes('担当者: 黄'));assert.ok(!q.includes('期間:'),'Do not invent a date range for 最近');
+  for(const message of ['A社様の情報をまとめて','黄さんの営業進捗。Salesforceは使用しない。','Web情報だけで黄さんの営業進捗をまとめて']) {
+    planning=[];planned=[];
+    await runSkillSearch({...runnerProps,message,originalRequest:message,history:[],selectedAccount:undefined,selectedAccountRecord:undefined});
+    assert.equal(planning[0].tool_choice,undefined,'Do not force Salesforce for company honorifics or explicit source exclusions');
+  }
+  // Execute the actual recommendation -> signed card -> common runner -> signed
+  // personal Gateway path, rather than stubbing the Teams Skill runner.
+  process.env.SKILL_SEARCH_ENABLED='true';process.env.TEAMS_BOT_ID='verified-test-bot';
+  catalog=[{...runnerProps.skills[0],title:'担当者別・営業進捗レポート',description:'担当者の商談と活動を検索して営業進捗をまとめる'}];
+  const {handleTeamsSkill}=load('features/teams/teams-skill-service.ts');
+  const teamsProps={actor,conversation:'verified-conversation',activityId:'suggest-lookup',message:lookupMessage};
+  const suggestion=await handleTeamsSkill(teamsProps);
+  assert.ok(suggestion.card.actions.length);
+  planning=[];planned=[lookupCall];const beforeTeamsLookup=fetches.length;
+  const teamsReply=await handleTeamsSkill({...teamsProps,activityId:'execute-lookup',message:'',value:suggestion.card.actions[0].data});
+  assert.ok(teamsReply.text.includes('取得できた営業進捗'));assert.equal(fetches.length,beforeTeamsLookup+1);
+  assert.deepEqual(planning[0].tool_choice,{type:'function',function:{name:'skill_search_salesforce'}});
+  assert.ok(fetches.at(-1).target.searchParams.get('q').includes('担当者: 黄'));
+  assert.equal(fetches.at(-1).options.headers['X-Chat-Thread-Id'],'teams-verified-conversation');
   planning=[];mode='denied';
   const failed=await runSkillSearch(runnerProps);
   assert.equal(failed.runner,undefined);assert.ok(failed.directContent.includes('閲覧権限'));
