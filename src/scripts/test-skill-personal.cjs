@@ -6,7 +6,7 @@ const {createHash} = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const principal = '11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';
 const actor = {email:'owner@example.test',salesforcePrincipal:principal};
-let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[];
+let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[], planned=[];
 const stubs = {
   'server-only':{},
   '@/features/canvas/canvas-actor':{getCanvasActor:async()=>currentActor},
@@ -18,7 +18,7 @@ const stubs = {
   '@/features/chat-page/chat-services/citation-service':{},
   '@/features/teams/teams-brave-search-service':{isTeamsBraveSearchConfigured:()=>false},
   '@/features/common/services/openai': {OpenAIInstance: () => ({
-    chat: {completions: {create: async p => {planning.push(p); return {choices:[{message:{role:'assistant',content:'ready'}}]};}}},
+    chat: {completions: {create: async p => {planning.push(p); return {choices:[{message:planned.shift() ?? {role:'assistant',content:'ready'}}]};}}},
     beta: {chat: {completions: {stream: () => {const e = new EventEmitter(); setImmediate(()=>e.emit('end'));return e;}}}},
   })},
 };
@@ -36,13 +36,22 @@ function load(file) {
 Object.assign(process.env,{SF_PERSONAL_MODE:'true',SF_PERSONAL_SCOPE:'whitelist',SF_PERSONAL_SNAPSHOT_POLICY:'strict',SF_PERSONAL_AUTH_METHOD:'oauth',SF_PERSONAL_SIGNING_KEY:'test-key-'.repeat(8),SF_PERSONAL_GATEWAY_BASE_URL:'https://personal.test',SF_GATEWAY_BASE_URL:'https://shared.test',SF_SKILL_READ_BASE_URL:'https://legacy.test',SF_PERSONAL_USERS_JSON:JSON.stringify([actor.principal?actor:{principal,email:actor.email}])});
 global.fetch=async(url,options)=>{
   const target=new URL(url);fetches.push({target,options});
-  const operation=options.body ? JSON.parse(options.body).operation : 'count';
+  if(mode==='invalid-company')return Response.json({ok:false,error:'invalid_company'},{status:400});
+  const q=target.searchParams.get('q') || '';
+  const operation=options.body ? JSON.parse(options.body).operation : /件数/.test(q) ? 'count' : /商談|opportunities/.test(q) ? 'opportunities' : /活動|activities/.test(q) ? 'activities' : 'accounts';
   const records=operation==='accounts'?[{Id:'001000000000001AAA',Name:'Example',lightning_url:'https://sf.test/account'}]:[];
-  return new Response(JSON.stringify({ok:mode!=='denied',object:operation==='accounts' || operation==='count' ?'Account':'Opportunity',items:records,snapshot_proof:mode==='no-proof' || operation==='count' ?null:'proof-for-'+operation,...(operation==='count'?{aggregation_result:{func:'COUNT',value:7,source:'soql_count',scope:'all'}}:{})}),{status:mode==='denied'?403:200,headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':mode==='wrong-person'?'foreign':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
+  return new Response(JSON.stringify({ok:mode!=='denied',object:mode==='wrong-object'?'Contact':operation==='accounts' || operation==='count' ?'Account':operation==='activities'?'Activity':operation==='sales'?'SalesSummary':'Opportunity',items:records,snapshot_proof:mode==='no-proof' || operation==='count' ?null:'proof-for-'+operation,...(operation==='count'?{aggregation_result:{func:'COUNT',value:7,source:'soql_count',scope:'all'}}:{})}),{status:mode==='denied'?403:200,headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':mode==='wrong-person'?'foreign':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
 };
 const {createSkillSearchTools}=load('features/skills/execution/skill-search-tools.ts');
 const {mergeSkillSnapshots}=load('features/skills/execution/skill-personal-access.ts');
 const {runSkillSearch}=load('features/skills/execution/skill-search-runner.ts');
+const {resolveSkillSalesforceScope}=load('features/skills/execution/skill-salesforce-scope.ts');
+assert.equal(resolveSkillSalesforceScope(undefined,'A社様の商談').owner,undefined);
+assert.equal(resolveSkillSalesforceScope(undefined,'お客様の声').owner,undefined);
+assert.equal(resolveSkillSalesforceScope(undefined,'A社さんの商談').owner,undefined);
+assert.equal(resolveSkillSalesforceScope(undefined,'営業部の黄さんの商談').owner,'黄');
+assert.equal(resolveSkillSalesforceScope({owner:'存在しない担当者'},'トヨタの商談').owner,undefined);
+assert.equal(resolveSkillSalesforceScope({owner:'渡部'},'営業部の渡部さんの商談').owner,'渡部','Explicit names with 部 remain valid when evidenced in the request');
 assert.equal(process.env.SF_PERSONAL_MODE,'true');
 assert.equal(load('features/common/services/salesforce-personal.ts').personalSalesforceForEmail(actor.email),true);
 const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを訪問したい',signal:new AbortController().signal};
@@ -50,12 +59,12 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   const tool=createSkillSearchTools(props);
   assert.equal((await tool.execute('salesforce','Exampleの取引先を検索','Example','accounts')).status,'ok');
   assert.equal(fetches[0].target.origin,'https://personal.test');
-  assert.equal(fetches[0].target.pathname,'/api/skills/salesforce/search');
+  assert.equal(fetches[0].target.pathname,'/api/sf/query_nl');
   assert.equal(fetches[0].options.headers['X-Skill-Read-Key'],undefined);
   assert.equal(fetches[0].options.headers['X-Chat-Thread-Id'],'owned-thread');
   const claim=JSON.parse(Buffer.from(fetches[0].options.headers['X-AC-Identity'],'base64url'));
-  assert.equal(claim.principal,principal);assert.equal(claim.method,'POST');
-  assert.equal(claim.body,createHash('sha256').update(fetches[0].options.body).digest('hex'));
+  assert.equal(claim.principal,principal);assert.equal(claim.method,'GET');
+  assert.equal(claim.body,createHash('sha256').update('').digest('hex'));
   assert.deepEqual(tool.salesforceSnapshot.proofs,['proof-for-accounts']);
   mode='no-proof';
   await tool.execute('salesforce','Exampleの取引先を検索','Example','accounts');
@@ -87,17 +96,78 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   const countClaim=JSON.parse(Buffer.from(fetches.at(-1).options.headers['X-AC-Identity'],'base64url'));
   assert.equal(countClaim.method,'GET');assert.equal(countClaim.body,createHash('sha256').update('').digest('hex'));
   assert.deepEqual(counts.salesforceSnapshot.proofs,[],'Unverifiable aggregates remain protected on reload');
+  const personTools=createSkillSearchTools({...props,userMessage:'Skill「営業進捗」を使って、黄さんの営業進捗をレポートにまとめて'});
+  for(const operation of ['accounts','opportunities','activities']) {
+    await personTools.execute('salesforce',operation==='accounts'?'担当営業の取引先を検索':'担当営業の'+operation,undefined,operation);
+    const sent=fetches.at(-1);
+    assert.equal(sent.target.pathname,'/api/sf/query_nl','Company-less employee searches must not use the fixed self-owner typed endpoint');
+    assert.equal(sent.options.method,undefined);
+    assert.ok(sent.target.searchParams.get('q').includes('担当者: 黄'),'Preserve requested employee even when the tool query omits the name');
+    assert.ok(sent.target.searchParams.get('q').startsWith('担当営業の'),'Individual search comes before report context');
+    assert.ok(!sent.target.searchParams.get('q').includes('Skill「'));
+    const signed=JSON.parse(Buffer.from(sent.options.headers['X-AC-Identity'],'base64url'));
+    assert.equal(signed.method,'GET');assert.equal(signed.principal,principal);
+    assert.equal(signed.target,sent.target.pathname+sent.target.search);
+  }
+  await personTools.execute('salesforce','黄さんの取引先','黄さん','accounts');
+  assert.equal(fetches.at(-1).target.pathname,'/api/sf/query_nl','A person returned as companyName by the model must not become a company lookup');
+  await createSkillSearchTools({...props,userMessage:'黄さんの担当するExample株式会社の商談'}).execute('salesforce','商談','Example株式会社','opportunities');
+  assert.equal(fetches.at(-1).target.pathname,'/api/sf/query_nl','Do not discard the named owner even when a company is also specified');
+  const beforePersonSales=fetches.length;
+  const personSales=await personTools.execute('salesforce','黄さんの売上',undefined,'sales');
+  assert.equal(personSales.reason,'account_required');assert.equal(fetches.length,beforePersonSales,'Do not send invalid typed sales or use unverified NL financial aggregation');
+  mode='invalid-company';
+  const invalid=await createSkillSearchTools(props).execute('salesforce','Exampleの取引先を検索','Example','accounts');
+  assert.equal(invalid.reason,'invalid_company');assert.equal(invalid.httpStatus,400);
+  mode='ok';
   const selected={id:'001000000000001AAA',name:'Example'};
   const runnerProps={chatThread:{id:'owned-thread'},email:actor.email,skills:[{id:'skill-'+'a'.repeat(64),title:'訪問準備',version:1,content:'Salesforce Account Opportunityを調べる',enabled:true}],message:'Skill「訪問準備」を使って、Exampleを訪問したい',originalRequest:'Exampleを訪問したい',history:[],signal:props.signal,selectedAccount:selected,selectedAccountRecord:{Id:selected.id,Name:'OLD SECRET SNAPSHOT'}};
   const start=fetches.length;
   const result=await runSkillSearch(runnerProps);
   assert.ok(fetches.length>start);
-  assert.equal(JSON.parse(fetches[start].options.body).operation,'accounts','Recheck selected Account before related searches');
+  assert.equal(fetches[start].target.pathname,'/api/sf/query_nl','Account recheck uses verified personal NL before related searches');
+  assert.equal(fetches[start].target.searchParams.get('account_id'),selected.id);
   assert.ok(!JSON.stringify(planning).includes('OLD SECRET SNAPSHOT'));
   assert.ok(result.salesforceSnapshot.proofs.includes('proof-for-accounts'));
+  assert.equal(fetches.length,start+1,'Personal runner must not prefetch generic opportunities that lose the requested filters');
   const autoStart=fetches.length;
   await runSkillSearch({...runnerProps,message:'Skill「訪問準備」を使って、Example株式会社を訪問したい',originalRequest:'Example株式会社を訪問したい',selectedAccount:undefined,selectedAccountRecord:undefined});
-  assert.ok(fetches.slice(autoStart).some(f=>JSON.parse(f.options.body).operation==='opportunities'),'One matching company must continue to related data without extra selection');
+  assert.equal(fetches.length,autoStart,'Unconfirmed company does not force fixed preflight searches; the model plans the actual searches');
+  const sfTool=planning.at(-1).tools.find(t=>t.function.name==='skill_search_salesforce');
+  for(const field of ['company','owner','period','target'])assert.ok(sfTool.function.parameters.properties[field]);
+  const toyota=createSkillSearchTools({...props,userMessage:'トヨタの今期の商談'});
+  await toyota.execute('salesforce','商談一覧を検索',undefined,undefined,{company:'トヨタ',period:'今期',target:'opportunities'});
+  let sent=fetches.at(-1),q=sent.target.searchParams.get('q');
+  assert.equal(sent.target.pathname,'/api/sf/query_nl');assert.ok(q.startsWith('商談一覧を検索'));assert.ok(q.includes('会社: トヨタ'));assert.ok(q.includes('期間: 今期'));
+  mode='wrong-object';
+  const mismatchObject=await toyota.execute('salesforce','商談一覧を検索',undefined,undefined,{company:'トヨタ',period:'今期',target:'opportunities'});
+  assert.equal(mismatchObject.reason,'unexpected_object');assert.equal(mismatchObject.status,'error','Contact rows must not be accepted as opportunity results');
+  mode='ok';
+  await toyota.execute('salesforce','商談一覧を検索',undefined,undefined,{company:'存在しない別会社',target:'opportunities'});
+  assert.ok(!fetches.at(-1).target.searchParams.get('q').includes('存在しない別会社'));
+  const selectedTools=createSkillSearchTools({...props,selectedAccount:selected});
+  await selectedTools.execute('salesforce','商談一覧',undefined,undefined,{target:'opportunities'});
+  sent=fetches.at(-1);assert.equal(sent.target.pathname,'/api/skills/salesforce/search');assert.equal(JSON.parse(sent.options.body).accountId,selected.id);
+  await selectedTools.execute('salesforce','年度売上を集計',undefined,undefined,{target:'sales',period:{start:'2026-04-01',end:'2027-04-01'}});
+  sent=fetches.at(-1);assert.equal(sent.target.pathname,'/api/skills/salesforce/search');assert.equal(JSON.parse(sent.options.body).operation,'sales');assert.equal(JSON.parse(sent.options.body).fiscalStart,'2026-04-01');
+  const companySales=await createSkillSearchTools({...props,userMessage:'A社様の年度売上',selectedAccount:selected}).execute('salesforce','年度売上を集計',undefined,undefined,{target:'sales'});
+  assert.equal(companySales.status,'empty','A company honorific must not be treated as an owner-scoped sales request');
+  assert.equal(fetches.at(-1).target.pathname,'/api/skills/salesforce/search');
+  await selectedTools.execute('salesforce','活動一覧',undefined,undefined,{target:'activities',period:{start:'2026-04-01',end:'2027-04-01'}});
+  assert.equal(fetches.at(-1).target.pathname,'/api/sf/query_nl','Extra conditions must not disappear into fixed queries');
+  const long=createSkillSearchTools({...props,userMessage:'黄さんの今期の商談'+ 'あ'.repeat(5000)});
+  await long.execute('salesforce','商談一覧を検索'+ '詳'.repeat(580),undefined,undefined,{owner:'黄',period:'今期',target:'opportunities'});
+  sent=fetches.at(-1);q=sent.target.searchParams.get('q');assert.ok(q.length<=500);assert.ok(q.startsWith('商談一覧を検索'));assert.ok(q.includes('担当者: 黄'));assert.ok(q.includes('期間: 今期'));
+  const signed=JSON.parse(Buffer.from(sent.options.headers['X-AC-Identity'],'base64url'));
+  assert.ok(sent.options.headers['X-AC-Identity'].length<=3000,'Percent-encoded Japanese must fit the Gateway identity limit');
+  assert.equal(signed.target,sent.target.pathname+sent.target.search);
+  const {createHmac}=require('node:crypto');assert.equal(sent.options.headers['X-AC-Signature'],createHmac('sha256',process.env.SF_PERSONAL_SIGNING_KEY).update(sent.options.headers['X-AC-Identity']).digest('hex'));
+  const badBefore=fetches.length;
+  assert.equal((await toyota.execute('salesforce','商談一覧',undefined,undefined,{owner:123})).status,'error');assert.equal(fetches.length,badBefore);
+  const forwardStart=fetches.length;
+  planned=[{role:'assistant',content:null,tool_calls:[{id:'call-scope',type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query:'商談一覧を検索',company:'トヨタ',owner:'黄',period:'今期',target:'opportunities'})}}]}];
+  await runSkillSearch({...runnerProps,message:'黄さんの担当するトヨタの今期の商談',originalRequest:'黄さんの担当するトヨタの今期の商談',selectedAccount:undefined,selectedAccountRecord:undefined});
+  assert.equal(fetches.length,forwardStart+1);q=fetches.at(-1).target.searchParams.get('q');assert.ok(q.includes('会社: トヨタ') && q.includes('担当者: 黄') && q.includes('期間: 今期'));
   planning=[];mode='denied';
   const failed=await runSkillSearch(runnerProps);
   assert.equal(failed.runner,undefined);assert.ok(failed.directContent.includes('閲覧権限'));

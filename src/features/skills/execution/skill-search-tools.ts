@@ -12,19 +12,21 @@ import { buildSlSearchTargetFilter, inferSlSearchTarget, stripSlSearchTargetTerm
 import { SKILL_SEARCH_LIMITS, boundSearchResult, validateSearchQuery } from "./skill-search-policy";
 import type { SearchSource, SkillSearchResult } from "./skill-search-policy";
 import { formatCitationMarkup } from "@/features/ui/markdown/citation-markup";
-import { buildAccountCandidateQuery, companyForLookup, hasInvalidCompanyFilter, isCompanyLookup, matchesCompanyName, sameSalesforceId, withSalesforceRecordId } from "./salesforce-search-query";
+import { buildAccountCandidateQuery, hasInvalidCompanyFilter, isCompanyLookup, matchesCompanyName, sameSalesforceId, withSalesforceRecordId } from "./salesforce-search-query";
 import type { SelectedSearchAccount } from "./skill-search-continuation";
-import type { FiscalPeriod } from "./skill-search-requirements";
+import { readFiscalPeriod, type FiscalPeriod } from "./skill-search-requirements";
+import { resolveSkillSalesforceScope, buildSkillSalesforceQuery } from "./skill-salesforce-scope";
 
 export function createSkillSearchTools(props: { email: string; threadId: string; signal: AbortSignal; userMessage: string; selectedAccount?: SelectedSearchAccount; selectedAccountRecord?: Record<string, unknown>; fiscalPeriod?: FiscalPeriod; documentSearch?: (query: string) => Promise<SkillSearchResult> }) {
   props = { ...props }; // Selection state belongs to this execution, never the caller's input.
+  const confirmedAccount = props.selectedAccount;
   let calls = 0;
   let personal = personalSalesforceForEmail(props.email);
   let salesforceSnapshot: SkillSnapshot;
   const citationResults: string[] = [];
   const contextResults: string[] = [];
   const trace: Array<{ source: SearchSource; status: string; truncated?: boolean }> = [];
-  async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown): Promise<SkillSearchResult> {
+  async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown, scope?: unknown): Promise<SkillSearchResult> {
     const started = Date.now();
     let result: SkillSearchResult;
     try {
@@ -39,7 +41,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
           const aborted = () => { clearTimeout(timeout); reject(new Error("aborted")); };
           const timeout = setTimeout(() => { props.signal.removeEventListener("abort", aborted); reject(new Error("timeout")); }, 25_000);
           props.signal.addEventListener("abort", aborted, { once: true });
-          search(source, query, companyName, operation).then(resolve, reject).finally(() => { clearTimeout(timeout); props.signal.removeEventListener("abort", aborted); });
+          search(source, query, companyName, operation, scope).then(resolve, reject).finally(() => { clearTimeout(timeout); props.signal.removeEventListener("abort", aborted); });
         });
       }
     } catch (error) {
@@ -54,17 +56,29 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
     console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? personal ? "personal" : process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
     return result;
   }
-  async function search(source: SearchSource, query: string, suppliedCompany?: unknown, suppliedOperation?: unknown): Promise<SkillSearchResult> {
+  async function search(source: SearchSource, query: string, suppliedCompany?: unknown, suppliedOperation?: unknown, suppliedScope?: unknown): Promise<SkillSearchResult> {
     if (source === "salesforce") {
       if (!isSalesforceAllowedEmail(props.email)) return { source, status: "denied", reason: "sf_whitelist_denied", message: "Salesforce参照権限がありません。" };
+      const scope = resolveSkillSalesforceScope(suppliedScope, props.userMessage, suppliedCompany);
+      scope.period ??= props.fiscalPeriod ? { start: props.fiscalPeriod.fiscalStart, end: props.fiscalPeriod.fiscalEnd } : undefined;
+      const operation = scope.target ?? (["accounts", "opportunities", "activities", "sales"].includes(String(suppliedOperation)) ? String(suppliedOperation) : /Sales__c|売上|受注合計/i.test(query) ? "sales" : /商談|Opportunity/i.test(query) ? "opportunities" : /活動履歴|活動一覧|Task|Event/i.test(query) ? "activities" : "accounts");
       if (!personal && props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) && (!suppliedOperation || suppliedOperation === "accounts") && isCompanyLookup(query)) {
         return { source, status: "ok", reason: "selected_account_snapshot", data: [props.selectedAccountRecord], message: "利用者が直前の検索結果から選んだAccountの取得済みデータです（候補提示時点のスナップショット）。同名の別Accountを混ぜず、このレコードの値を使用してください。" };
       }
       // Typed account/sales operations do not implement natural-language COUNT.
       // Route that migration boundary to the strict NL read-plan endpoint.
-      const countQuery = /件数|レコードの数|ユーザ.*数|何件|何人|何名|カウント|そのうち|その中で/.test(query);
-      const typedBase = personal && suppliedOperation === "sales" ? personalSalesforceBase() : countQuery ? undefined : personal ? personalSalesforceBase() : process.env.SF_SKILL_READ_BASE_URL;
-      if (suppliedOperation === "sales" && !typedBase) return { source, status: "unavailable", reason: "typed_sales_required", message: "売上の請求先照合と年度集計には構造化読み取りGatewayが必要です。従来の自然言語検索では代替しません。" };
+      const countQuery = scope.target ? scope.target === "count" : /件数|レコードの数|ユーザ.*数|何件|何人|何名|カウント|そのうち|その中で/.test(query);
+      const financial = operation === "sales" || (scope.target === "count" && /Sales__c|売上|受注合計/i.test(query));
+      if (personal && financial && (scope.owner || !confirmedAccount)) {
+        return { source, status: "unavailable", reason: "account_required", message: "担当者単位や取引先未確定の売上集計には対応していません。対象の取引先を指定・確定すれば、その取引先の年度売上を集計できます。本人分や取引先全体の数字で代用しないでください。" };
+      }
+      // Personal search defaults to NL. Fixed queries are only for a confirmed
+      // account's sales and unfiltered opportunities/activities; they cannot retain
+      // arbitrary owner, period or stage conditions.
+      const extraConditions = Boolean(scope.owner || scope.period || /失注|成約|進行中|以降|以前|StageName|CloseDate/.test(query + props.userMessage));
+      const typedPersonal = personal && confirmedAccount && !countQuery && (financial || (["opportunities", "activities"].includes(operation) && !extraConditions));
+      const typedBase = personal ? typedPersonal ? personalSalesforceBase() : undefined : countQuery ? undefined : process.env.SF_SKILL_READ_BASE_URL;
+      if (financial && !typedBase) return { source, status: "unavailable", reason: "typed_sales_required", message: "売上集計には確定した取引先と構造化読み取りGatewayが必要です。対象の取引先を指定してください。自然文検索で金額を代用しません。" };
       const base = personal ? personalSalesforceBase() : typedBase || process.env.SF_GATEWAY_BASE_URL;
       if (!base) return { source, status: "unavailable", reason: "gateway_not_configured", message: "Salesforce Gateway未設定です。" };
       if (typedBase && !personal && !process.env.SF_SKILL_READ_KEY) return { source, status: "unavailable", reason: "gateway_key_missing" };
@@ -88,17 +102,19 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         const target = new URL(url);
         if (typedBase) {
           if (!personal && !process.env.SF_SKILL_READ_KEY) throw new Error("Skill read key missing");
-          const company = companyForLookup(props.userMessage, suppliedCompany);
-          let operation = ["accounts", "opportunities", "activities", "sales"].includes(String(suppliedOperation)) ? String(suppliedOperation) : /商談|Opportunity/i.test(text) ? "opportunities" : /活動履歴|活動一覧|Task|Event/i.test(text) ? "activities" : /Sales__c|売上|受注合計/i.test(text) ? "sales" : "accounts";
-          if (company && !props.selectedAccount) operation = "accounts";
-          const body = JSON.stringify({ operation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(operation === "sales" ? props.fiscalPeriod : {}) });
+          const company = scope.company;
+          const typedOperation = financial ? "sales" : company && !props.selectedAccount ? "accounts" : operation;
+          const fiscalPeriod = typeof scope.period === "string" ? readFiscalPeriod(scope.period) ?? props.fiscalPeriod : scope.period ? { fiscalStart: scope.period.start, fiscalEnd: scope.period.end } : props.fiscalPeriod;
+          if (typedOperation === "sales" && scope.period && !fiscalPeriod) throw new TypeError("売上の集計期間を確認してください。");
+          const body = JSON.stringify({ operation: typedOperation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(typedOperation === "sales" ? fiscalPeriod : {}) });
           const signed = personal ? await skillPersonalHeaders(target, props.email, props.threadId, "POST", body) : {};
           const response = await fetch(target, { method: "POST", signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "Content-Type": "application/json", "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId, ...(!personal ? {"X-Skill-Read-Key": process.env.SF_SKILL_READ_KEY!} : {}) }, body });
           return verifiedResponse(response, signed);
         }
-        target.searchParams.set("q", buildSalesforceGatewayQuery(text));
+        target.searchParams.set("q", personal ? buildSkillSalesforceQuery(buildSalesforceGatewayQuery(text), scope) : buildSalesforceGatewayQuery(text));
         if (props.selectedAccount) target.searchParams.set("account_id", props.selectedAccount.id);
-        const signed = personal ? await skillPersonalHeaders(target, props.email, props.threadId, "GET", "") : {};
+        const signed: Record<string, string> = personal ? await skillPersonalHeaders(target, props.email, props.threadId, "GET", "") : {};
+        if (personal && (signed["X-AC-Identity"]?.length ?? 0) > 3000) throw new TypeError("Salesforce search scope is too long");
         const response = await fetch(target, { signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "X-User-Email": props.email, "X-Chat-Thread-Id": props.threadId } });
         return verifiedResponse(response, signed);
       };
@@ -108,11 +124,16 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         const explanation = salesforceReadText(issue);
         if (explanation) return { source, status: response.status === 403 ? "denied" : issue?.needs_clarification ? "needs_confirmation" : "error", reason: issue?.error_kind || issue?.error, authoritativeText: explanation, message: explanation };
         let reason = "gateway_http_error";
-        try { const error = issue?.error; if (["local_connection_required", "identity_mismatch", "sandbox_required", "salesforce_denied", "salesforce_query_failed", "activities_unavailable", "local_read_unavailable", "account_required", "unsupported_operation", "unauthorized", "user_denied"].includes(error)) reason = error; } catch { /* Do not log upstream bodies. */ }
+        try { const error = issue?.error; if (["local_connection_required", "identity_mismatch", "sandbox_required", "salesforce_denied", "salesforce_query_failed", "activities_unavailable", "local_read_unavailable", "account_required", "unsupported_operation", "invalid_input", "invalid_company", "invalid_account_id", "invalid_period", "invalid_response", "unauthorized", "user_denied"].includes(error)) reason = error; } catch { /* Do not log upstream bodies. */ }
         return { source, status: response.status === 401 || response.status === 403 ? "denied" : "error", reason, httpStatus: response.status };
       }
       let body;
       try { body = await response.json(); } catch { return { source, status: "error", reason: "invalid_json_response" }; }
+      const expectedObjects = { accounts: ["Account"], opportunities: ["Opportunity"], activities: ["Activity", "Task", "Event"], contacts: ["Contact"] };
+      const expected = scope.target && scope.target in expectedObjects ? expectedObjects[scope.target as keyof typeof expectedObjects] : undefined;
+      if (expected && body.object && !expected.includes(body.object) && !body.needs_clarification && body.status !== "needs_account_selection") {
+        return { source, status: "error", reason: "unexpected_object", message: "依頼した検索対象と異なる種類のデータが返ったため、結果として使用しません。検索対象を確認してください。" };
+      }
       const authoritativeText = salesforceReadText(body);
       if (authoritativeText) return { source, status: body.ok === false ? "error" : "ok", data: body.items || [], authoritativeText, message: `${authoritativeText}\n${JSON.stringify(salesforceReadMetadata(body))}\n${salesforceReadInstruction}` };
       if (body.status === "needs_account_selection" && Array.isArray(body.account_candidates)) {
@@ -122,12 +143,12 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       }
       if (body.ok === false || body.error) return { source, status: "error", reason: "gateway_result_error", message: "Gatewayが検索を完了できませんでした。未対応条件の可能性もあるため0件とは扱わないでください。" };
       if (!Array.isArray(body.items)) return { source, status: "error", reason: "invalid_gateway_response", message: "Gatewayの検索結果形式を確認できませんでした。" };
-      const company = companyForLookup(props.userMessage, suppliedCompany);
-      if (typedBase && suppliedOperation === "sales" && body.object !== "SalesSummary") return { source, status: "error", reason: "unexpected_object", message: "売上集計に対して異なるオブジェクトが返りました。売上結果として使用しないでください。" };
+      const company = scope.company;
+      if (typedBase && financial && body.object !== "SalesSummary") return { source, status: "error", reason: "unexpected_object", message: "売上集計に対して異なるオブジェクトが返りました。売上結果として使用しないでください。" };
       const invalidFilter = hasInvalidCompanyFilter(body.soql);
       const wrongObject = company && isCompanyLookup(query) && body.object && body.object !== "Account";
       const lookup = company && (isCompanyLookup(query) || body.object === "Account");
-      const canRecover = lookup && !/私の|自分の|部下|所有|期間|以降|以前|集計|件数|合計|以上|以下|年度/.test(query);
+      const canRecover = lookup && !scope.owner && !scope.period && !/私の|自分の|部下|所有|期間|以降|以前|集計|件数|合計|以上|以下|年度/.test(query);
       if (!typedBase && canRecover && (invalidFilter || wrongObject || (body.object === "Account" && !body.items.length))) {
         if (calls >= SKILL_SEARCH_LIMITS.calls) return { source, status: "limit", message: "取引先検索を確認するための追加検索枠がありません。0件とは断定できません。" };
         calls++;

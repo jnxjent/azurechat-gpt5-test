@@ -15,8 +15,15 @@ import { formatAccountCandidates } from "./skill-account-candidates";
 
 const sources: SearchSource[] = ["salesforce", "web", "documents"];
 const tools: ChatCompletionTool[] = sources.map(source => ({ type: "function", function: {
-  name: `skill_search_${source}`, description: source === "salesforce" ? "既存Salesforce Gatewayの読み取り検索。会社、商談、活動等を一つの目的ごとに自然文で指定する。まず取引先を特定し、次に会社名・取得したIDを明示して関連情報を検索する。SOQLを直接送らない。" : source === "web" ? "公開Web情報・最新ニュースを検索する。社内の非公開情報や個人情報を検索語に含めない。" : "本人が閲覧できる社内資料・スレッド添付を検索する。規程、マニュアル、FAQ、会議資料等。",
-  parameters: { type: "object", properties: { query: { type: "string", maxLength: 600 }, ...(source === "salesforce" ? { companyName: { type: "string", description: "会社を調べる場合、今回の依頼にある会社名を検索文とは別にそのまま指定する。", maxLength: 120 }, operation: { type: "string", enum: ["accounts", "opportunities", "activities", "sales"], description: "accounts=取引先、opportunities=商談、activities=Task/Event活動。1種類ずつ指定。選択済みAccount IDはサーバーで付与される。会社指定のない商談/活動は本人所有を取得する。" } } : {}) }, required: ["query"], additionalProperties: false },
+  name: `skill_search_${source}`, description: source === "salesforce" ? "既存Salesforce Gatewayの本人権限による読み取り検索。商談・活動等を一つの目的ごとに自然文で指定し、会社・担当者・期間・対象を項目で渡す。会社名は略称も可。担当者の依頼を取引先検索や本人所有分へ置き換えない。会社単位の売上は取引先確定が必要。SOQLを直接送らない。" : source === "web" ? "公開Web情報・最新ニュースを検索する。社内の非公開情報や個人情報を検索語に含めない。" : "本人が閲覧できる社内資料・スレッド添付を検索する。規程、マニュアル、FAQ、会議資料等。",
+  parameters: { type: "object", properties: { query: { type: "string", maxLength: 600, description: "今回の個別検索だけを書く。例: 商談一覧を検索。レポート依頼全体を繰り返さず、段階などの追加条件はこの文に保持する。" }, ...(source === "salesforce" ? {
+    company: { type: "string", maxLength: 120, description: "今回の依頼文にある会社名・略称。そのまま抽出し、法人格を補わない。" },
+    owner: { type: "string", maxLength: 80, description: "担当者名。例: 黄。指定なしは省略し、本人に置き換えない。" },
+    period: { anyOf: [{ type: "string", maxLength: 100 }, { type: "object", properties: { start: { type: "string", maxLength: 40 }, end: { type: "string", maxLength: 40 } }, required: ["start", "end"], additionalProperties: false }], description: "期間の自然文（例: 今期）または開始日・終了日。売上の構造化集計ではendは範囲に含まない。" },
+    target: { type: "string", enum: ["accounts", "opportunities", "activities", "contacts", "sales", "count"], description: "取引先・商談・活動・連絡先・売上・件数。各検索に必ず対象を指定する。" },
+    companyName: { type: "string", maxLength: 120, description: "旧形式の会社名。新規の検索ではcompanyを使う。" },
+    operation: { type: "string", enum: ["accounts", "opportunities", "activities", "sales"], description: "旧形式の検索種別。新規の検索ではtargetを使う。本人の所有分という意味ではない。" },
+  } : {}) }, required: ["query"], additionalProperties: false },
 } }));
 
 export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, "id">; skills: UserSkill[]; message: string; history: ChatCompletionMessageParam[]; email: string; signal: AbortSignal; selectedAccount?: SelectedSearchAccount; originalRequest?: string; selectedAccountRecord?: Record<string, unknown>; documentSearch?: (query: string) => Promise<import("./skill-search-policy").SkillSearchResult> }) {
@@ -63,7 +70,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     const otherSourceOnly = /(?:Web|ウェブ|公開情報|社内資料)(?:検索|情報)?(?:だけ|のみ)/i.test(props.message) && !/Salesforce|セールスフォース/i.test(props.message);
     const ownerScoped = /私の|自分の|部下|所有|担当する|担当している/.test(props.message);
     let confirmationPending = false;
-    if (company && requestsSalesforce && !forbidsSalesforce && !otherSourceOnly && !ownerScoped && !props.selectedAccount) {
+    if (!personal && company && requestsSalesforce && !forbidsSalesforce && !otherSourceOnly && !ownerScoped && !props.selectedAccount) {
       const discovery = await search.execute("salesforce", buildAccountCandidateQuery(company), company, "accounts");
       messages.push({ role: "system", content: "サーバーが実行した事前の取引先候補検索結果です。needs_confirmationなら候補を番号付きで示して利用者に選択を求め、それ以上検索しないでください。検索結果:\n" + JSON.stringify(discovery) });
       confirmationPending = discovery.status === "needs_confirmation";
@@ -94,6 +101,9 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     if (selectedAccount && !confirmationPending) {
       for (const operation of requirements.operations) {
         if (Date.now() >= searchDeadline || controller.signal.aborted) break;
+        // Let the model preserve stage and other task-specific conditions in its
+        // individual query, rather than prefetching an unfiltered personal list.
+        if (personal && operation !== "sales") continue;
         const label = { accounts: "Account基本情報", opportunities: "商談を金額降順で上位10件", activities: "活動履歴を日付降順で最新10件", sales: "Sales__cの請求先照合・売上集計と直近売上" }[operation] ?? operation;
         const result = await search.execute("salesforce", label, undefined, operation);
         coverage.push({ operation, status: result.status, reason: result.reason, count: Array.isArray(result.data) ? result.data.length : undefined, truncated: result.truncated, queryCount: result.queryCount });
@@ -119,7 +129,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
       for (const call of answer.tool_calls) {
         const source = sources.find(item => call.function.name === `skill_search_${item}`);
         let result: unknown = { status: "error", message: "未対応のツールまたは検索条件です。" };
-        try { if (source) { const args = JSON.parse(call.function.arguments); result = await search.execute(source, args.query, args.companyName, args.operation); } } catch { /* Invalid arguments are returned to the model without raw input. */ }
+        try { if (source) { const args = JSON.parse(call.function.arguments); result = await search.execute(source, args.query, args.companyName, args.operation, { company: args.company, owner: args.owner, period: args.period, target: args.target }); } } catch { /* Invalid arguments are returned to the model without raw input. */ }
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
         const exactText = (result as {authoritativeText?: string}).authoritativeText;
         if (source === "salesforce" && exactText) {
