@@ -37,6 +37,7 @@ Object.assign(process.env,{SF_PERSONAL_MODE:'true',SF_PERSONAL_SCOPE:'whitelist'
 global.fetch=async(url,options)=>{
   const target=new URL(url);fetches.push({target,options});
   if(mode==='invalid-company')return Response.json({ok:false,error:'invalid_company'},{status:400});
+  if(mode==='context-missing-422' || mode==='context-missing-200')return Response.json({ok:false,error:'context_missing',error_kind:'context_missing',needs_clarification:true,message:'引き継ぐ件数検索の条件がありません。対象と条件を含めて質問してください。'},{status:mode==='context-missing-422'?422:200,headers:{'X-SF-Connection-Mode':'personal-oauth','X-AC-Principal':principal,'X-SF-User-Id':'005000000000001AAA','X-SF-Org-Id':'00D000000000001AAA'}});
   const q=target.searchParams.get('q') || '';
   const operation=options.body ? JSON.parse(options.body).operation : /件数/.test(q) ? 'count' : /商談|opportunities/.test(q) ? 'opportunities' : /活動|activities/.test(q) ? 'activities' : 'accounts';
   const records=operation==='accounts'?[{Id:'001000000000001AAA',Name:'Example',lightning_url:'https://sf.test/account'}]:[];
@@ -45,7 +46,18 @@ global.fetch=async(url,options)=>{
 const {createSkillSearchTools}=load('features/skills/execution/skill-search-tools.ts');
 const {mergeSkillSnapshots}=load('features/skills/execution/skill-personal-access.ts');
 const {runSkillSearch}=load('features/skills/execution/skill-search-runner.ts');
-const {resolveSkillSalesforceScope}=load('features/skills/execution/skill-salesforce-scope.ts');
+const {resolveSkillSalesforceScope,buildSkillSalesforceQuery}=load('features/skills/execution/skill-salesforce-scope.ts');
+const continuationPattern=/そのうち|その中で|検索.*(?:くれた|した|対象|条件)|(?:先ほど|さっき|直前).*(?:条件|対象|範囲)/;
+for(const target of [undefined,'accounts','opportunities','activities','contacts','sales','count'])
+  for(const company of [undefined,'Example株式会社'])
+    for(const owner of [undefined,'黄'])
+      for(const period of [undefined,'今期',{start:'2026-04-01',end:'2027-04-01'}]) {
+        const q=buildSkillSalesforceQuery('黄さんが担当する取引先を検索',{target,company,owner,period});
+        assert.equal(continuationPattern.test(q),false,q);
+        assert.ok(q.startsWith('黄さんが担当する取引先を検索'));
+        if(target)assert.ok(q.includes('種類: '));
+      }
+assert.ok(buildSkillSalesforceQuery('さっきの検索条件で取引先を検索',{target:'accounts'}).startsWith('さっきの検索条件で取引先を検索'),'Preserve user-authored continuation semantics');
 assert.equal(resolveSkillSalesforceScope(undefined,'A社様の商談').owner,undefined);
 assert.equal(resolveSkillSalesforceScope(undefined,'お客様の声').owner,undefined);
 assert.equal(resolveSkillSalesforceScope(undefined,'A社さんの商談').owner,undefined);
@@ -168,6 +180,22 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   planned=[{role:'assistant',content:null,tool_calls:[{id:'call-scope',type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query:'商談一覧を検索',company:'トヨタ',owner:'黄',period:'今期',target:'opportunities'})}}]}];
   await runSkillSearch({...runnerProps,message:'黄さんの担当するトヨタの今期の商談',originalRequest:'黄さんの担当するトヨタの今期の商談',selectedAccount:undefined,selectedAccountRecord:undefined});
   assert.equal(fetches.length,forwardStart+1);q=fetches.at(-1).target.searchParams.get('q');assert.ok(q.includes('会社: トヨタ') && q.includes('担当者: 黄') && q.includes('期間: 今期'));
+  for(const failureMode of ['context-missing-422','context-missing-200']) {
+    mode=failureMode;
+    const failedSearch=await createSkillSearchTools(props).execute('salesforce','取引先を検索',undefined,undefined,{target:'accounts'});
+    assert.equal(failedSearch.status,'error');assert.equal(failedSearch.reason,'context_missing');assert.equal(failedSearch.authoritativeText,undefined);
+    planning=[];
+    const before=fetches.length;
+    const call=(id,query,target)=>({role:'assistant',content:null,tool_calls:[{id,type:'function',function:{name:'skill_search_salesforce',arguments:JSON.stringify({query,target})}}]});
+    planned=[call('failed-account','取引先を検索','accounts'),call('next-opportunity','商談を検索','opportunities')];
+    const continued=await runSkillSearch({...runnerProps,message:'黄さんの営業進捗をまとめて',originalRequest:'黄さんの営業進捗をまとめて',selectedAccount:undefined,selectedAccountRecord:undefined});
+    assert.equal(continued.directContent,undefined,'Gateway clarification must not become the final one-line answer');
+    assert.ok(continued.runner,'Final report generation must still run');
+    assert.equal(fetches.length,before+2,'Searches after context_missing must execute');
+    const toolResult=planning.at(-1).messages.find(m=>m.role==='tool' && m.tool_call_id==='failed-account');
+    assert.equal(JSON.parse(toolResult.content).status,'error');
+    assert.equal(JSON.parse(toolResult.content).authoritativeText,undefined);
+  }
   planning=[];mode='denied';
   const failed=await runSkillSearch(runnerProps);
   assert.equal(failed.runner,undefined);assert.ok(failed.directContent.includes('閲覧権限'));

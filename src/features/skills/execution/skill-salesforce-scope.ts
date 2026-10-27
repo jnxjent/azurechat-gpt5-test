@@ -44,7 +44,7 @@ export function resolveSkillSalesforceScope(value: unknown, request: string, leg
 export function buildSkillSalesforceQuery(query: string, scope: SkillSalesforceScope): string {
   const period = typeof scope.period === "string" ? scope.period : scope.period ? `${scope.period.start}～${scope.period.end}` : undefined;
   const labels = { accounts: "取引先", opportunities: "商談", activities: "活動", contacts: "連絡先", sales: "売上", count: "件数" };
-  const conditions = [scope.target && `対象: ${labels[scope.target]}`, scope.company && `会社: ${scope.company}`, scope.owner && `担当者: ${scope.owner}`, period && `期間: ${period}`].filter(Boolean).join(" / ");
+  const conditions = [scope.target && `種類: ${labels[scope.target]}`, scope.company && `会社: ${scope.company}`, scope.owner && `担当者: ${scope.owner}`, period && `期間: ${period}`].filter(Boolean).join(" / ");
   // Reserve room for all structured conditions; never prepend the full report request.
   const suffix = conditions ? ` / ${conditions}` : "";
   let prefix = query.replace(/[\r\n\u0000-\u001f]/g, " ").trim().slice(0, Math.max(1, SKILL_SF_QUERY_LIMIT - suffix.length));

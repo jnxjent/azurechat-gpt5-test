@@ -17,6 +17,11 @@ import type { SelectedSearchAccount } from "./skill-search-continuation";
 import { readFiscalPeriod, type FiscalPeriod } from "./skill-search-requirements";
 import { resolveSkillSalesforceScope, buildSkillSalesforceQuery } from "./skill-salesforce-scope";
 
+function skillContextMissing(source: SearchSource, body: any): SkillSearchResult | undefined {
+  if (body?.error_kind !== "context_missing" && body?.error !== "context_missing") return;
+  return { source, status: "error", reason: "context_missing", message: "この検索は前の検索の続きと判定され失敗しました。対象・担当者・期間などを明示した独立した質問で検索し直すか、他の取得済み結果で回答してください。この失敗を0件として扱わず、未取得の情報を明示してください。" };
+}
+
 export function createSkillSearchTools(props: { email: string; threadId: string; signal: AbortSignal; userMessage: string; selectedAccount?: SelectedSearchAccount; selectedAccountRecord?: Record<string, unknown>; fiscalPeriod?: FiscalPeriod; documentSearch?: (query: string) => Promise<SkillSearchResult> }) {
   props = { ...props }; // Selection state belongs to this execution, never the caller's input.
   const confirmedAccount = props.selectedAccount;
@@ -121,6 +126,8 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       const response = await request(query);
       if (!response.ok) {
         const issue = await response.json().catch(() => null);
+        const contextMissing = skillContextMissing(source, issue);
+        if (contextMissing) return contextMissing;
         const explanation = salesforceReadText(issue);
         if (explanation) return { source, status: response.status === 403 ? "denied" : issue?.needs_clarification ? "needs_confirmation" : "error", reason: issue?.error_kind || issue?.error, authoritativeText: explanation, message: explanation };
         let reason = "gateway_http_error";
@@ -129,6 +136,8 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       }
       let body;
       try { body = await response.json(); } catch { return { source, status: "error", reason: "invalid_json_response" }; }
+      const contextMissing = skillContextMissing(source, body);
+      if (contextMissing) return contextMissing;
       const expectedObjects = { accounts: ["Account"], opportunities: ["Opportunity"], activities: ["Activity", "Task", "Event"], contacts: ["Contact"] };
       const expected = scope.target && scope.target in expectedObjects ? expectedObjects[scope.target as keyof typeof expectedObjects] : undefined;
       if (expected && body.object && !expected.includes(body.object) && !body.needs_clarification && body.status !== "needs_account_selection") {
