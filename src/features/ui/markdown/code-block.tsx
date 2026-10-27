@@ -3,6 +3,7 @@ import { FC, memo, useEffect, useState } from "react";
 import { Prism } from "react-syntax-highlighter";
 import { atomDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { Button } from "../button";
+import { HtmlReportView } from "./html-report-view";
 
 export const fence = {
   render: "CodeBlock",
@@ -36,6 +37,8 @@ export const CodeBlock: FC<Props> = memo(({ language, children }) => {
 
     return () => clearTimeout(timeout);
   }, [isIconChecked]);
+
+  if (/^html$/i.test(language)) return <HtmlReportView key={children} source={children} />;
 
   return (
     <div className="flex flex-col -mx-9">

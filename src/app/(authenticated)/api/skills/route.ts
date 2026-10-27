@@ -1,4 +1,4 @@
-import { createUserSkill, deleteUserSkill, getUserSkill, listUserSkills, updateUserSkill } from "@/features/skills/skill-service";
+import { createUserSkill, deleteUserSkill, getUserSkill, listSharedSkills, listUserSkills, updateUserSkill } from "@/features/skills/skill-service";
 import { exportSkill } from "@/features/skills/skill-rules";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,7 +20,10 @@ export async function GET(request: Request) {
       "Content-Type":"text/markdown; charset=utf-8", "Content-Disposition":'attachment; filename="skill.md"',
       "Cache-Control":"private, no-store", "X-Content-Type-Options":"nosniff",
     }});
-    return Response.json({items:await listUserSkills()},{headers:{"Cache-Control":"private, no-store"}});
+    const items=await listUserSkills();
+    // Published Skills are optional; a failure must not hide the user's own Skills.
+    const shared=await listSharedSkills().catch(()=>{console.warn("[skills] shared Skills unavailable");return [];});
+    return Response.json({items,shared},{headers:{"Cache-Control":"private, no-store"}});
   } catch(error) {return failure(error);}
 }
 export async function POST(request: Request) {

@@ -21,9 +21,14 @@ const container={
   items:{
     async create(body){assert.equal(body.userId,owner);if(records.has(key(body.id,owner)))throw {code:409};put(body);},
     query(spec,options) {
-      assert.equal(options.partitionKey,owner);
       const parameters=Object.fromEntries(spec.parameters.map(p=>[p.name,p.value]));
       assert.equal(parameters['@userId'],owner);
+      if(options===undefined) {
+        // Cross-partition read of published Skills only.
+        assert.ok(spec.query.includes('c.shared = true')&&spec.query.includes('c.userId != @userId'));
+        return {async fetchAll(){return {resources:[...records.values()].filter(item=>item.userId!==owner&&item.shared===true&&item.type===parameters['@type']&&!item.isDeleted).map(item=>structuredClone(item))};}};
+      }
+      assert.equal(options.partitionKey,owner);
       return {async fetchAll(){return {resources:[...records.values()].filter(item=>item.userId===owner&&item.type===parameters['@type']&&!item.isDeleted).map(item=>structuredClone(item))};}};
     },
     async batch(operations,user) {
@@ -41,7 +46,7 @@ const container={
 };
 const stubs={
   'server-only':{},
-  '@/features/auth-page/helpers':{hashValue:value=>value,async userHashedId(){if(!owner)throw Error('User not found');return owner;}},
+  '@/features/auth-page/helpers':{hashValue:value=>value,async userHashedId(){if(!owner)throw Error('User not found');return owner;},async getCurrentUser(){if(!owner)throw Error('User not found');return {name:'Name of '+owner,email:owner+'@example.test'};}},
   '@/features/canvas/canvas-actor':{getCanvasActor:async()=>({email:owner})},
   '@/features/common/services/cosmos':{HistoryContainer:()=>container},
   '@/features/theme/theme-config':{AI_NAME:'AI'},
@@ -134,6 +139,22 @@ async function main(){
   result=await handler.prepareSkillsForChat({message:'Skill「ない名前」を使って',threadId:'thread',userName:'User'});
   assert.ok((await result.response.text()).includes('見つからない'));
   assert.ok(messages.every(message=>message.chatThreadId==='thread'));
+  // Publishing: read-only for others, owner name stored only while shared, own Skills never listed as shared.
+  assert.equal(saved.shared,false,'Skills are private by default');
+  const published=await service.updateUserSkill(saved.id,{...saved,shared:true},saved.version);
+  assert.equal(published.shared,true);assert.equal(records.get(key(published.id,owner)).ownerName,'Name of user-a');
+  assert.deepEqual(await service.listSharedSkills(),[],'own published Skills are not offered as shared');
+  owner='user-b';
+  let others=await service.listSharedSkills();
+  assert.equal(others.length,1);assert.equal(others[0].title,'営業活動分析');assert.equal(others[0].ownerName,'Name of user-a');
+  assert.ok(/^[a-f0-9]{32}$/.test(others[0].ref));assert.deepEqual(Object.keys(others[0]).sort(),['content','description','ownerName','ref','title','updatedAt'],'storage keys are not exposed');
+  await assert.rejects(service.updateUserSkill(published.id,{...published,content:'改ざん'},published.version),/見つかりません/,'others cannot edit a published Skill');
+  const listed=await (await api.GET(new Request('http://local.test/api/skills'))).json();
+  assert.deepEqual(listed.items,[]);assert.equal(listed.shared.length,1);
+  owner='user-a';
+  const unpublished=await service.updateUserSkill(published.id,{...published,shared:false},published.version);
+  assert.equal(unpublished.shared,false);assert.equal(records.get(key(unpublished.id,owner)).ownerName,undefined);
+  owner='user-b';assert.deepEqual(await service.listSharedSkills(),[],'unpublishing hides the Skill');owner='user-a';
   owner='';assert.equal((await api.GET(new Request('http://local.test/api/skills'))).status,401);
   assert.equal((await api.POST(req('POST',input))).status,401);
   console.log('PASS Skills: private CRUD/API/download, normalized names, versions, atomic rename, disabled/deleted isolation, Markdown roundtrip, explicit chat save/reference and token budgets');

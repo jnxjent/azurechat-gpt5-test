@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import React, { FC } from "react";
 import { Citation } from "./citation";
 import { CodeBlock } from "./code-block";
+import { mapOutsideHtmlReports } from "./html-report";
 import { MarkdownProvider } from "./markdown-context";
 import { Paragraph } from "./paragraph";
 import {
@@ -199,11 +200,13 @@ export const Markdown: FC<Props> = (props) => {
   // 1) citation正規化
   // 2) フェンス内テーブル救出
   // 3) 画像URL正規化
-  const step0 = normalizeNewlines(props.content);
-  const step0b = normalizeBrTags(step0);
-  const step1 = preprocessCitations(step0b);
-  const step2 = unwrapFencedTables(step1);
-  const content = embedNakedImageUrls(step2);
+  // Preserve report source, including <br>, links and CSS, during Markdown cleanup.
+  const content = mapOutsideHtmlReports(props.content, (part) => {
+    const step0 = normalizeNewlines(part);
+    const step0b = normalizeBrTags(step0);
+    const step1 = preprocessCitations(step0b);
+    return embedNakedImageUrls(unwrapFencedTables(step1));
+  });
 
   return (
     <MarkdownProvider onCitationClick={props.onCitationClick}>

@@ -1,0 +1,1 @@
+export const SKILL_HTML_OUTPUT = "出力形式にHTMLが指定された場合、最終レポートは単一のhtmlコードブロックに、DOCTYPE・html lang=ja・head（UTF-8、title、埋め込みCSS）・bodyを含む自己完結したHTMLとして出力する。見出し・表・出典・取得範囲と不足・参照Skill表示をHTML本文に含める。数値や事実を補わず、取得したリンクだけを使う。スクリプト・イベント属性・フォーム・iframe・外部CSS・外部画像・外部フォント・外部通信は使わない。入力値はHTMLエスケープする。候補選択や追加質問は通常のチャットで返す。HTML指定がなければ通常のMarkdownで返す。";

@@ -1,39 +1,82 @@
 import { skillBytes, validateSkill } from "./skill-rules";
 import type { SkillInput } from "./skill-rules";
 
-export const GENERATOR_QUESTIONS = [
-  { title: "どんな仕事をするSkillを作りますか？", hint: "例：訪問前に顧客情報・商談・ニュースを整理したい", examples: ["お客様訪問前ブリーフィング", "予実分析", "営業活動分析"] },
-  { title: "使うときに、何を入力してもらいますか？", hint: "例：会社名、対象期間、営業所名。不明なら「おまかせ」で進められます。", examples: ["会社名", "対象期間", "営業所名", "おまかせ"] },
-  { title: "どの情報を参照したいですか？", hint: "例：Salesforce、社内資料、Web、手元の資料。接続が必要な情報は、その条件もSkillに含めます。", examples: ["Salesforce", "Web", "社内資料", "入力した情報だけ"] },
-  { title: "進め方や、必ず守りたいことはありますか？", hint: "例：不明なら質問する、数字は推測しない、出典を付ける。", examples: ["不明点は質問する", "数値は推測しない", "出典と未確認事項を明記する", "おまかせ"] },
-  { title: "どんな形で結果を出しますか？", hint: "例：会社概要・商談一覧・訪問時の話題候補を、表と箇条書きで。", examples: ["表形式", "箇条書き", "報告書形式", "おまかせ"] },
-];
-const exclusiveOption = (option: string) => option === "おまかせ" || option === "入力した情報だけ";
-export function toggleGeneratorOption(selected: string[], option: string): string[] {
-  if (selected.includes(option)) return selected.filter(item=>item!==option);
-  return exclusiveOption(option) ? [option] : [...selected.filter(item=>!exclusiveOption(item)),option];
+export const GENERATOR_MAX_MESSAGES = 20;
+export const GENERATOR_USER_MESSAGE_BYTES = 2000;
+export const GENERATOR_ASSISTANT_MESSAGE_BYTES = 6000;
+/** After this many user turns the assistant must stop asking and return a draft. */
+export const GENERATOR_DRAFT_BY_TURN = 2;
+
+export interface GeneratorMessage { role: "user" | "assistant"; content: string }
+export interface GeneratorBase { scope: "own" | "shared"; ref: string; title: string; ownerName?: string; id?: string; version?: number; shared?: boolean }
+export interface GeneratorInput { messages: GeneratorMessage[]; draft?: SkillInput; basedOn?: GeneratorBase; createNew?: boolean }
+/** Keep the original revision and the user's publication choice throughout a conversation. */
+export function retainGeneratorBase(current: GeneratorBase | null, incoming: GeneratorBase | undefined, publish: boolean, createNew: boolean) {
+  if (createNew || current || !incoming) return { basedOn: current, publish };
+  return { basedOn: incoming, publish: incoming.scope === "own" ? incoming.shared === true : publish };
 }
-export function combineGeneratorAnswer(selected: string[], input: string): string {
-  const choices=Array.from(new Set(selected)).join("、");
-  const extra=input.trim();
-  return choices ? choices+(extra&&!selected.includes(extra)?`\n補足：${extra}`:"") : extra;
+/** A registered Skill offered to the model as a possible base. `ref` is opaque. */
+export interface GeneratorCandidate { ref: string; scope: "own" | "shared"; title: string; description: string; content: string; ownerName?: string }
+
+/** The first assistant message. Existing titles let the user reuse instead of duplicating. */
+export function generatorOpening(existingTitles: string[], total: number): string {
+  const examples = existingTitles.slice(0, 3).map(title => `「${title}」`).join("");
+  return [
+    "どんなスキルにするか教えてください。次の点を、わかる範囲で一度にお答えいただければ十分です。",
+    "",
+    "- 目的・成果物：何をさせたいですか（例：商談の週次サマリー、訪問後の報告書作成など）。",
+    "- 使うデータ：Salesforce、社内資料、Webなど、参照したい情報源はありますか。",
+    "- 出力形式：チャットでの回答、表、HTMLレポート（Web版でプレビュー・ダウンロード）など、希望はありますか。",
+    "- 使う場面：誰が、どんなタイミングで使いますか（例：毎週月曜に営業所長が使う）。",
+    "",
+    "ざっくりした内容でも構いません。いただいた情報から最初のバージョンを作り、あとから調整できます。",
+    ...(total > 0 ? ["", `なお、すでに${examples}${total > 3 ? "など" : ""}${total}件のスキルが登録されています（全社公開分を含む）。似たものがある場合は、そのスキルを改善する形にもできます。`] : []),
+  ].join("\n");
 }
-export interface GeneratorInput { answers: string[]; revision?: string; draft?: SkillInput }
 
 export function validateGeneratorInput(value: unknown): GeneratorInput {
   if (!value || typeof value !== "object") throw new TypeError("作成するSkillの情報を入力してください。");
   const input = value as Record<string, unknown>;
-  if (!Array.isArray(input.answers) || input.answers.length !== GENERATOR_QUESTIONS.length ||
-    input.answers.some(answer => typeof answer !== "string" || !answer.trim() || skillBytes(answer) > 1200)) {
-    throw new TypeError("5つの質問に、各1,200バイト以内で回答してください。");
+  if (!Array.isArray(input.messages) || !input.messages.length || input.messages.length > GENERATOR_MAX_MESSAGES) {
+    throw new TypeError("会話が長くなりすぎました。いったん保存するか、最初からやり直してください。");
   }
-  const answers = input.answers.map((answer: string) => answer.trim());
-  if (/^(?:おまかせ|わからない|不明)$/.test(answers[0])) throw new TypeError("最初に、作りたいSkillの目的を教えてください。");
-  if (input.revision !== undefined || input.draft !== undefined) {
-    if (typeof input.revision !== "string" || !input.revision.trim() || skillBytes(input.revision) > 1200 || !input.draft) {
-      throw new TypeError("修正したい点を1,200バイト以内で入力してください。");
+  const messages = input.messages.map((entry: unknown) => {
+    const message = entry as Record<string, unknown> | null;
+    const role = message?.role, content = typeof message?.content === "string" ? message.content.trim() : "";
+    if ((role !== "user" && role !== "assistant") || !content) throw new TypeError("会話の形式が正しくありません。");
+    if (skillBytes(content) > (role === "user" ? GENERATOR_USER_MESSAGE_BYTES : GENERATOR_ASSISTANT_MESSAGE_BYTES)) {
+      throw new TypeError("1回の入力は2,000バイト以内にしてください。");
     }
-    return { answers, revision: input.revision.trim(), draft: validateSkill(input.draft) };
+    return { role, content } as GeneratorMessage;
+  });
+  if (messages[messages.length - 1].role !== "user") throw new TypeError("メッセージを入力してください。");
+  const firstUser = messages.find(message => message.role === "user")!;
+  if (/^(?:おまかせ|わからない|不明)$/.test(firstUser.content)) throw new TypeError("最初に、作りたいSkillの目的を教えてください。");
+  let basedOn: GeneratorBase | undefined;
+  if (input.basedOn !== undefined) {
+    const base = input.basedOn as GeneratorBase;
+    if (!base || (base.scope !== "own" && base.scope !== "shared") || typeof base.ref !== "string" ||
+        (base.scope === "own" && (base.id !== base.ref || !/^skill-[a-f0-9]{64}$/.test(base.ref) || !Number.isSafeInteger(base.version) || base.version! < 1)) ||
+        (base.scope === "shared" && !/^shared-[a-f0-9]{32}$/.test(base.ref))) throw new TypeError("更新元の情報が正しくありません。");
+    basedOn = base;
   }
-  return { answers };
+  return { messages, ...(input.draft === undefined ? {} : { draft: validateSkill(input.draft) }), ...(basedOn ? { basedOn } : {}), createNew: input.createNew === true };
+}
+
+const bigrams = (value: string) => {
+  const text = value.normalize("NFKC").toLowerCase().replace(/[\s、。・,.!！?？「」『』（）()#*\-:：]/g, "");
+  const grams = new Set<string>();
+  for (let index = 0; index < text.length - 1; index += 1) grams.add(text.slice(index, index + 2));
+  return grams;
+};
+/** Cheap lexical preselection; the model makes the final "is it the same job" judgement. */
+export function similarCandidates(request: string, candidates: GeneratorCandidate[], limit = 3): GeneratorCandidate[] {
+  const wanted = bigrams(request);
+  if (!wanted.size) return [];
+  return candidates.map(candidate => {
+    const own = bigrams(`${candidate.title} ${candidate.description}`);
+    let shared = 0;
+    own.forEach(gram => { if (wanted.has(gram)) shared += 1; });
+    return { candidate, score: own.size ? shared / own.size : 0 };
+  }).filter(entry => entry.score >= 0.2).sort((a, b) => b.score - a.score).slice(0, limit).map(entry => entry.candidate);
 }
