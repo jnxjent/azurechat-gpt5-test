@@ -41,14 +41,14 @@ import {
 
 type UploadScope = "common" | "personal";
 
-export const ChatInput = ({ isAdmin: isAdminProp }: { isAdmin?: boolean }) => {
+export const ChatInput = ({ isAdmin: isAdminProp, skillSuggestionsAllowed = false }: { isAdmin?: boolean; skillSuggestionsAllowed?: boolean }) => {
   const { loading, input, chatThreadId } = useChat();
   const textInput = useRef<HTMLTextAreaElement>(null);
   const { data: session } = useSession();
   const suggestions = useSkillSuggestions(input, chatThreadId, loading === "idle", value => {
     chatStore.updateInput(value);
     textInput.current?.focus();
-  }, session?.user?.email ?? "");
+  }, session?.user?.email ?? "", skillSuggestionsAllowed);
   const { uploadButtonLabel } = useFileStore();
   const { isPlaying } = useTextToSpeech();
   const { isMicrophoneReady } = useSpeechToText();

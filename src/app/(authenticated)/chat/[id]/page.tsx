@@ -73,6 +73,7 @@ export default async function Home(props: HomeParams) {
       chatDocuments={docsResponse.response}
       extensions={extensionResponse.response}
       isAdmin={isAdmin}
+      skillSuggestionsAllowed={Boolean(process.env.SF_EXTENSION_ID && chatThreadResponse.response.extension.includes(process.env.SF_EXTENSION_ID))}
     />
   );
 }

@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { applySkillSuggestion, skillSuggestionKey, suggestSkills, type SkillSuggestion } from "./skill-suggestions";
 
-export function useSkillSuggestions(draft: string, thread: string, enabled: boolean, onSelect: (value: string) => void, catalogOwner = "") {
+export function useSkillSuggestions(draft: string, thread: string, enabled: boolean, onSelect: (value: string) => void, catalogOwner = "", catalogAllowed = true) {
   const [skills, setSkills] = useState<SkillSuggestion[]>([]);
   const [dismissed, setDismissed] = useState<string>();
   const [composing, setComposing] = useState(false);
@@ -12,6 +12,7 @@ export function useSkillSuggestions(draft: string, thread: string, enabled: bool
     let controller: AbortController | undefined;
     setSkills([]);
     setSelection(undefined); setDismissed(undefined); setActive(0);
+    if (!catalogAllowed) return;
     const refresh = () => {
       controller?.abort();
       const request = new AbortController(); controller = request;
@@ -26,12 +27,12 @@ export function useSkillSuggestions(draft: string, thread: string, enabled: bool
     window.addEventListener("azurechat:skills-changed", refresh);
     window.addEventListener("storage", storage);
     return () => { controller?.abort(); window.removeEventListener("focus", refresh); window.removeEventListener("azurechat:skills-changed", refresh); window.removeEventListener("storage", storage); };
-  }, [thread, catalogOwner]);
-  const candidates = enabled && !composing && dismissed !== draft ? suggestSkills(skills, draft) : [];
+  }, [thread, catalogOwner, catalogAllowed]);
+  const candidates = catalogAllowed && enabled && !composing && dismissed !== draft ? suggestSkills(skills, draft) : [];
   const candidateIds = candidates.map(skill => skill.id).join(",");
   useEffect(() => { setActive(0); }, [draft, candidateIds]);
   const activeIndex = Math.max(0, Math.min(active, candidates.length - 1));
-  const selectedSkill = selection && draft.startsWith(selection.prefix) ? selection.skill : undefined;
+  const selectedSkill = catalogAllowed && selection && draft.startsWith(selection.prefix) ? selection.skill : undefined;
   const select = (skill: SkillSuggestion) => {
     const value = applySkillSuggestion(draft, skill);
     setSelection({skill,prefix:applySkillSuggestion("",skill)}); onSelect(value);

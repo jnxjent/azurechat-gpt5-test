@@ -28,6 +28,7 @@ interface ChatPageProps {
   chatDocuments: Array<ChatDocumentModel>;
   extensions: Array<ExtensionModel>;
   isAdmin: boolean;
+  skillSuggestionsAllowed?: boolean;
 }
 
 type ChatUiRole = "user" | "system" | "assistant" | "tool";
@@ -143,7 +144,7 @@ export const ChatPage: FC<ChatPageProps> = (props) => {
         </ChatMessageContentArea>
       </ChatMessageContainer>
       <DeskNetsCredentialRegistration />
-      <ChatInput isAdmin={isAdmin} />
+      <ChatInput isAdmin={isAdmin} skillSuggestionsAllowed={props.skillSuggestionsAllowed === true} />
       </div>
       {canvas&&<CanvasPanel key={`${props.chatThread.id}:${canvas.key}`} threadId={props.chatThread.id} initialContent={canvas.content} chatContext={canvas.context} onClose={()=>setCanvas(null)}/>}
     </main>
