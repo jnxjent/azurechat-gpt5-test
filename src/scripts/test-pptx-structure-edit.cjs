@@ -1,6 +1,7 @@
 const fs=require('node:fs'),ts=require('typescript'),assert=require('node:assert/strict'),path=require('node:path');
 const m={exports:{}};
-new Function('module','exports',ts.transpileModule(fs.readFileSync(path.join(__dirname,'../features/pptx/structure-edit-intent.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText)(m,m.exports);
+function pure(name){const mod={exports:{}};new Function('require','module','exports',ts.transpileModule(fs.readFileSync(path.join(__dirname,'../features/pptx/'+name+'.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText)(id=>pure(id.replace('./','')),mod,mod.exports);return mod.exports;}
+Object.assign(m.exports,pure('structure-edit-intent'));
 const {detectPptxStructureEdit:detect,isPptxStructureEditRequest:routed,verifyPptxStructureContent:verify,sanitizePptxStructureOps:sanitize}=m.exports;
 
 // Slide insertion
@@ -46,3 +47,11 @@ assert.equal(verify([{title:'x',kind:'bullets',bullets:['売上は123億円']}],
 const ops=sanitize([{type:'add_slide',position:3,title:'T',kind:'table',table:{columns:['a','b','c','d','e','f'],rows:Array.from({length:9},()=>['1','2'])}},{type:'drop_all'},{type:'font_size',scope:'all',mode:'relative',value:0},{type:'fill_slide',slideIndex:-1}]);
 assert.equal(ops.length,1);assert.equal(ops[0].table.columns.length,5);assert.equal(ops[0].table.rows.length,6);
 console.log('PASS pptx structure edit intent, routing, grounding and op whitelist');
+
+let content=verify([{title:'結論。',kind:'stats',keyMessage:'売上999億円',stats:[{label:'A社',value:'100',unit:'億円',period:'2025年度'},{label:'B社',value:'80',unit:'億円',period:'2025年度'}]}],'A社 2025年度 100億円\nB社 2025年度 80億円');
+assert.equal(content.slides[0].keyMessage,undefined);assert.equal(content.slides[0].title,'結論');assert.equal(content.slides[0].kind,'stats');
+assert.equal(verify([{title:'結論',kind:'stats',stats:[{label:'A社',value:'100'},{label:'架空社',value:'999'}]}],'A社 100').slides.length,0);
+content=sanitize([{type:'add_slide',title:'比較。',kind:'two_column',bullets:['A社は回収'],table:{columns:['企業','特徴'],rows:[['A社','回収']]},unknown:'discard'}]);
+assert.equal(content[0].kind,'two_column');assert.equal(content[0].unknown,undefined);assert.equal(content[0].title,'比較');
+const safeStats=sanitize([{type:'add_slide',title:'数値',kind:'stats',stats:[{label:'A',value:'10',extra:99},{label:'B',value:'20'}]}]);assert.equal(safeStats[0].stats[0].extra,undefined);
+console.log('PASS key message evidence, stats/two_column whitelist and title punctuation');

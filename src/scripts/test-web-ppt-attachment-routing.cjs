@@ -37,6 +37,8 @@ function load(relative) {
   const original = mod.require.bind(mod);
   mod.require = name => {
     if (name === 'server-only') return {};
+    if(name==='./document-source-policy')return load('features/chat-page/chat-services/chat-api/document-source-policy.ts');
+ if (name === './visual-composition') return load('features/pptx/visual-composition.ts');
     if (name === '@/features/skills/execution/skill-personal-access') return load('features/skills/execution/skill-personal-access.ts');
     if (name === './image/image-intent') return load('features/chat-page/chat-services/chat-api/image/image-intent.ts');
     if (name === '@/features/pptx/output-intent') return load('features/pptx/output-intent.ts');

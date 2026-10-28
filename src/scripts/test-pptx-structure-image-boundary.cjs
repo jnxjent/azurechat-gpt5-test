@@ -10,7 +10,8 @@ function visit(node){
 }
 visit(source);assert(handler&&imageCheck,'Use the actual edit_pptx tool entry');
 const mod={exports:{}};
-new Function('module','exports',ts.transpileModule(fs.readFileSync(path.join(root,'features/pptx/structure-edit-intent.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(mod,mod.exports);
+function pure(name){const m={exports:{}};new Function('require','module','exports',ts.transpileModule(fs.readFileSync(path.join(root,'features/pptx/'+name+'.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(id=>pure(id.replace('./','')),m,m.exports);return m.exports;}
+Object.assign(mod.exports,pure('structure-edit-intent'));
 let reads=0,calls=0;
 function entry(message){
   return new Function('props','detectPptxStructureEdit','resolvePptxEditImageSource','resolveLatestStoredImageDataUrl','resolveLatestPptxInfoFromThread','executeEditPptx',

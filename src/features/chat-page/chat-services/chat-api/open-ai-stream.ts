@@ -52,6 +52,10 @@ function buildToolResultFallbackContent(toolResults: string[]): string {
     }
     const downloadUrl =
       typeof parsed.downloadUrl === "string" ? parsed.downloadUrl : "";
+    if (downloadUrl && parsed.integration === "pptx_structure_edit") {
+      const message = typeof parsed.message === "string" ? parsed.message : "スライドを編集しました。";
+      return `${message}\n\n[編集したPowerPointをダウンロード](${downloadUrl})`;
+    }
     if (downloadUrl) {
       return `ファイルの処理が完了しました。\n\n[ファイルを開く](${downloadUrl})`;
     }
@@ -123,15 +127,10 @@ function normalizeFinalCitations(
     .map((item) => availableById.get(item.id))
     .filter((item): item is CitationMarkupItem => Boolean(item));
 
-  // Prefer the model-selected subset. If its tag was malformed beyond parsing,
-  // use one server-created citation per document name instead of losing citations.
-  const selected = requested.length
-    ? requested
-    : Array.from(
-        new Map(
-          available.map((item) => [item.name.toLocaleLowerCase(), item])
-        ).values()
-      );
+  // Retrieval candidates are not evidence that a document was used. Never
+  // attach every search hit when the answer contains no valid citation IDs.
+  const selected = requested;
+  if (!selected.length) return removeCitationMarkup(content).trimEnd();
   const citation = formatCitationMarkup(selected);
   if (!citation) return content;
 
@@ -184,7 +183,7 @@ export const OpenAIStream = (props: {
       // （revalidate 後の props.messages でも tool メッセージが残るようにするため）
       const pendingToolResults: string[] = [...(props.initialToolResults ?? [])];
 
-      const finalizeStream = async (content: string) => {
+      const finalizeStream = async (content: string, emitBeforePersistence = false) => {
         if (finalized) return;
         finalized = true;
 
@@ -205,6 +204,9 @@ export const OpenAIStream = (props: {
           repairedContent += `\n\n取得日時：${salesforceSnapshot.retrievedAt}\n※取得時点の記録です。保存後に権限を再検証できない場合は非表示になります。`;
         }
 
+        if (emitBeforePersistence) {
+          streamResponse("finalContent", JSON.stringify({ type: "finalContent", response: repairedContent }));
+        }
         try {
           // tool results を assistant より先に保存することで
           // revalidate 後の props.messages でも messages[index-1] が tool になる
@@ -234,7 +236,7 @@ export const OpenAIStream = (props: {
             type: "finalContent",
             response: repairedContent,
           };
-          streamResponse(response.type, JSON.stringify(response));
+          if (!emitBeforePersistence) streamResponse(response.type, JSON.stringify(response));
           closeController();
         }
       };
@@ -280,12 +282,23 @@ export const OpenAIStream = (props: {
             };
 
             streamResponse(response.type, JSON.stringify(response));
+            // Structural edits already have a verified completion message and file.
+            // Deliver these directly; a second model response may be empty.
+            try {
+              const result = JSON.parse(payload);
+              if (result?.integration === "pptx_structure_edit" && typeof result.downloadUrl === "string") {
+                console.log("[open-ai-stream] finalizing pptx structure result");
+                void finalizeStream(buildToolResultFallbackContent([payload]), true).then(() => runner.abort());
+                return;
+              }
+            } catch { /* Other tool results keep their existing behavior. */ }
           } catch (e) {
             console.log("⚠️ functionCallResult mapping error:", e);
           }
         })
         // 🔹 通常のコンテンツ delta
         .on("content", () => {
+          if (finalized) return;
           const completion = runner.currentChatCompletionSnapshot;
           if (completion) {
             const response: AzureChatCompletion = {

@@ -12,6 +12,7 @@ import argparse
 import json
 import re
 import sys
+import math
 from copy import deepcopy
 
 from pptx import Presentation
@@ -19,7 +20,10 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.oxml.ns import qn
-from pptx.util import Emu, Pt
+from pptx.util import Emu, Pt, Inches
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
+from pptx.enum.text import PP_ALIGN
 
 MIN_PT = 10
 MAX_PT = 44
@@ -238,7 +242,7 @@ def fit_bullets(bullets, width: int, height: int, start_pt: float):
         need = lines_needed(kept, width, size) * size * 1.45 + len(kept) * size * 0.4
         if need <= Emu(height).pt:
             return size, kept, len(bullets) - len(kept)
-        if size > 12:
+        if size > min(14, start_pt):
             size -= 1
             continue
         if len(kept) <= 1:
@@ -270,18 +274,29 @@ def font_rgb(font):
     return font.rgb if font is not None else None
 
 
-def add_table(slide, left, top, width, height, columns, rows, ref_font, start_pt, header_rgb=None):
+def add_table(slide, left, top, width, height, columns, rows, ref_font, start_pt, header_rgb=None, warnings=None):
     columns = [str(c)[:30] for c in columns][:5]
     rows = [[str(c)[:80] for c in row][: len(columns)] + [""] * max(0, len(columns) - len(row)) for row in rows][:6]
     size = min(start_pt, 14)
-    while size > MIN_PT:
+    while size > body_min_pt(ref_font):
         row_lines = [max(lines_needed([cell], width // len(columns), size, 0.6) for cell in row) for row in rows]
         need = (sum(row_lines) + 1) * size * 1.5 + (len(rows) + 1) * size * 0.6
         if need <= Emu(height).pt:
             break
         size -= 1
-    row_h = int(Pt(size * 2.1))
-    shape = slide.shapes.add_table(len(rows) + 1, len(columns), left, top, width, min(height, row_h * (len(rows) + 1)))
+    heights = lambda: [int(Pt(max(1,lines_needed(columns,width//len(columns),size,.6))*size*1.4+size*.6))] + [int(Pt(max(lines_needed([cell],width//len(columns),size,.6) for cell in row)*size*1.4+size*.6)) for row in rows]
+    omitted = 0
+    while rows and sum(heights()) > height:
+        rows.pop()
+        omitted += 1
+    if not rows:
+        raise ValueError("14ptの文字を維持したまま表を配置できません。内容を分けてください。")
+    if omitted and warnings is not None:
+        warnings.append(f"文字サイズを維持するため、表の{omitted}行を省略しました。")
+    row_heights = heights()
+    shape = slide.shapes.add_table(len(rows) + 1, len(columns), left, top, width, sum(row_heights))
+    for i, value in enumerate(row_heights):
+        shape.table.rows[i].height = value
     shape.name = "AzureChat Added Table"
     table = shape.table
     for c, name in enumerate(columns):
@@ -319,112 +334,285 @@ def add_sources(slide, left, top, width, sources, ref_font):
         run = p.add_run()
         label = str(src.get("label") or src.get("url"))[:80]
         run.text = ("出典: " if i == 0 else "　　  ") + label
-        apply_font(run, ref_font, 9)
+        apply_font(run, ref_font, 10)
         url = str(src.get("url") or "")
         if re.match(r"^https?://", url):
             run.hyperlink.address = url
     return box
 
 
+# Structural additions only: existing font-size edit limits remain unchanged.
+OUTER_MARGIN = Inches(0.5)
+BLOCK_GAP = Inches(0.3)
+
+def theme_colors(slide):
+    result = {}
+    try:
+        master = slide.slide_layout.slide_master.part
+        themes = [rel.target_part for rel in master.rels.values() if rel.reltype.endswith("/theme")]
+        if themes:
+            from lxml import etree
+            root = etree.fromstring(themes[0].blob)
+            for name in ("accent1", "dk2", "lt2"):
+                element = root.find(".//" + qn("a:clrScheme") + "/" + qn("a:" + name))
+                if element is not None and len(element):
+                    value = element[0].get("val") or element[0].get("lastClr")
+                    if value and re.fullmatch(r"[0-9a-fA-F]{6}", value):
+                        result[name] = RGBColor.from_string(value)
+    except (AttributeError, KeyError, ValueError):
+        pass
+    return result
+
+
+def palette(slide, primary=None):
+    colors = theme_colors(slide)
+    main = primary if primary is not None and max(primary)-min(primary)>25 else colors.get("accent1") or primary or RGBColor(40, 92, 80)
+    pale = RGBColor(*(round(c * .07 + 255 * .93) for c in main))
+    return main, pale, colors.get("dk2") or RGBColor(40, 48, 48)
+
+
+def body_min_pt(ref_font):
+    size = ref_font.size.pt if ref_font is not None and ref_font.size else 14
+    return min(14, max(10, size))
+
+
+def design_text(slide, x, y, w, h, text, size, ref_font, color, bold=False, warnings=None, name="AzureChat Design Text"):
+    text = str(text)
+    # Never solve a crowded block by shrinking below the requested design size.
+    original = text
+    while text and lines_needed(text.split("\n"), w, size, .15) * size * 1.35 > Emu(h).pt:
+        text = text[:-1]
+    if text != original:
+        text = text.rstrip() + "…"
+        if warnings is not None:
+            warnings.append("文字サイズを維持するため、追加スライドの長い文章を一部省略しました。")
+    box = slide.shapes.add_textbox(int(x), int(y), int(w), int(h))
+    box.name = name
+    tf = box.text_frame
+    tf.word_wrap = True
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+    for i, line in enumerate(text.split("\n")):
+        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        para.alignment = PP_ALIGN.LEFT
+        run = para.add_run()
+        run.text = line
+        apply_font(run, ref_font, size, bold)
+        run.font.color.rgb = color
+    return box
+
+
+def add_stats(slide, left, top, width, height, items, ref_font, primary, warnings):
+    primary, pale, dark = palette(slide, primary)
+    items = items[:4]
+    if len(items) < 2:
+        raise ValueError("数値パネルには根拠のある数値が2つ以上必要です。")
+    gap = BLOCK_GAP
+    card_w = (width - gap * (len(items) - 1)) // len(items)
+    for i, item in enumerate(items):
+        x = left + i * (card_w + gap)
+        card = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, int(x), int(top), int(card_w), int(height))
+        card.name = "AzureChat Stat Panel"
+        card.fill.solid()
+        card.fill.fore_color.rgb = pale
+        card.line.fill.background()
+        pad = Pt(14)
+        design_text(slide, x+pad, top+pad, card_w-2*pad, height*.2, item["label"], 16, ref_font, dark, True, warnings)
+        design_text(slide, x+pad, top+height*.28, card_w-2*pad, height*.3, item["value"], 32, ref_font, primary, True, warnings, "AzureChat Stat Value")
+        basis = " / ".join(str(item.get(key) or "") for key in ("period", "unit") if item.get(key))
+        design_text(slide, x+pad, top+height*.65, card_w-2*pad, height*.25, basis, 11, ref_font, dark, False, warnings, "AzureChat Stat Basis")
+
+
 def company_card_column(columns):
     return next((i for i, name in enumerate(columns) if re.search(r"企業|会社|プレイヤー", str(name))), None)
 
 
-def add_company_cards(slide, left, top, width, height, columns, rows, ref_font, header_rgb=None):
-    """Small company lists use editable cards; all source cells remain visible.
-
-    Preserve supplied labels, including rank labels, rather than inventing an
-    ordering. Numeric/general comparison tables retain the existing table path.
-    """
+def add_company_cards(slide, left, top, width, height, columns, rows, ref_font, header_rgb=None, warnings=None):
+    """Editable company profiles; no decorative stripes or invented ranks."""
+    warnings = warnings if warnings is not None else []
+    primary, pale, dark = palette(slide, header_rgb)
     name_col = company_card_column(columns)
-    primary = header_rgb or RGBColor.from_string("104F60")
-    accent = primary
-    for shape in slide.shapes:
-        fill = shape._element.find(qn("p:spPr") + "/" + qn("a:solidFill") + "/" + qn("a:srgbClr"))
-        if fill is not None:
-            value = fill.get("val", "")
-            if re.fullmatch(r"[0-9a-fA-F]{6}", value):
-                rgb = RGBColor.from_string(value)
-                if max(rgb) > 160 and min(rgb) < 140 and max(rgb) - min(rgb) > 40:
-                    accent = rgb
-                    break
-    gap = int(width * 0.025)
+    gap = BLOCK_GAP
     count = len(rows)
-    cols = 3 if count >= 3 else count
+    cols = min(3, count)
     nrows = (count + cols - 1) // cols
     card_w = (width - gap * (cols - 1)) // cols
     card_h = (height - gap * (nrows - 1)) // nrows
-
-    def text_box(x, y, w, h, text, size, color, bold=False):
-        box = slide.shapes.add_textbox(int(x), int(y), int(w), int(h))
-        box.name = "AzureChat Company Card Text"
-        tf = box.text_frame
-        tf.word_wrap = True
-        tf.margin_left = tf.margin_right = 0
-        tf.margin_top = tf.margin_bottom = 0
-        run = tf.paragraphs[0].add_run()
-        run.text = text
-        apply_font(run, ref_font, size, bold)
-        run.font.color.rgb = color
-        return box
-
+    size = body_min_pt(ref_font)
     for i, row in enumerate(rows):
         r, c = divmod(i, cols)
-        row_count = min(cols, count - r * cols)
-        offset = (width - (card_w * row_count + gap * (row_count - 1))) // 2
-        x, y = left + offset + c * (card_w + gap), top + r * (card_h + gap)
-        card = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, x, y, card_w, card_h)
+        row_count = min(cols, count-r*cols)
+        offset = (width-(card_w*row_count+gap*(row_count-1)))//2
+        x, y = left+offset+c*(card_w+gap), top+r*(card_h+gap)
+        card = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, int(x), int(y), int(card_w), int(card_h))
         card.name = "AzureChat Company Card"
         card.fill.solid()
-        card.fill.fore_color.rgb = RGBColor(255, 255, 255)
-        card.line.color.rgb = RGBColor.from_string("DCE8EC")
-        card.line.width = Pt(1)
-        pad = int(card_w * 0.07)
-        stripe = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, x + pad, y + pad, int(card_w * 0.2), Pt(4))
-        stripe.fill.solid()
-        stripe.fill.fore_color.rgb = accent
-        stripe.line.fill.background()
-        name = str(row[name_col]) if name_col < len(row) else ""
-        details = "\n".join(f"{label}：{row[j]}" for j, label in enumerate(columns) if j != name_col and j < len(row) and str(row[j]).strip())
-        inner_w = card_w - 2 * pad
-        title_h = int(card_h * 0.30)
-        name_size = 18
-        while name_size > 12 and lines_needed([name], inner_w, name_size, 0) * name_size * 1.3 > Emu(title_h).pt:
-            name_size -= 1
-        text_box(x + pad, y + pad + Pt(10), inner_w, title_h, name, name_size, primary, True)
-        body_y = y + pad + Pt(10) + title_h
-        body_h = max(Pt(16), y + card_h - pad - body_y)
-        size = 14
-        while size > 10 and lines_needed(details.split("\n"), inner_w, size, 0) * size * 1.35 > Emu(body_h).pt:
-            size -= 1
-        text_box(x + pad, body_y, inner_w, body_h, details, size, RGBColor.from_string("52666E"))
+        card.fill.fore_color.rgb = pale
+        card.line.fill.background()
+        pad = Pt(12)
+        inner_w = card_w-2*pad
+        name = str(row[name_col])
+        design_text(slide,x+pad,y+pad,inner_w,card_h*.26,name,18,ref_font,primary,True,warnings,"AzureChat Company Card Text")
+        period_col = next((j for j,label in enumerate(columns) if re.search(r"年度|決算期|対象期間", str(label)) and not re.search(r"売上|数量|件数|金額|人数", str(label))), None)
+        numeric = next((j for j, label in enumerate(columns) if j != name_col and re.search(r"売上|数量|件数|金額|人数", str(label))
+                        and j < len(row) and re.fullmatch(r"[0-9][0-9,.]*(?:億円|百万円|万円|千円|円|件|人|台|トン)?", str(row[j]))
+                        and re.search(r"(?:19|20)\d{2}.*(?:年|期)", str(label) + (str(row[period_col]) if period_col is not None and period_col<len(row) else ""))
+                        and (re.search(r"[（(].+[）)]", str(label)) or re.search(r"億円|百万円|万円|千円|円|件|人|台|トン",str(row[j])))), None)
+        body_y = y+card_h*.33
+        details = "\n".join(f"{label}：{row[j]}" for j,label in enumerate(columns) if j not in (name_col,numeric,period_col if numeric is not None else None) and j<len(row) and str(row[j]).strip())
+        if numeric is not None:
+            match = re.fullmatch(r"([0-9][0-9,.]*)(.*)",str(row[numeric]))
+            metric_value, metric_unit = match.group(1), match.group(2)
+            design_text(slide,x+pad,body_y,inner_w,card_h*.28,metric_value,30,ref_font,primary,True,warnings,"AzureChat Company Metric")
+            design_text(slide,x+pad,y+card_h*.64,inner_w,card_h*.22,str(columns[numeric]) + (" / " + str(row[period_col]) if period_col is not None and period_col<len(row) else "") + (" / " + metric_unit if metric_unit else ""),11,ref_font,dark,False,warnings,"AzureChat Metric Basis")
+            body_y = y+card_h*.87
+        if details:
+            design_text(slide,x+pad,body_y,inner_w,max(Pt(16),y+card_h-pad-body_y),details,size,ref_font,dark,False,warnings,"AzureChat Company Card Text")
+
+
+def add_visual_composition(slide, left, top, width, height, plan, ref_font, primary, warnings=None):
+    """Render the same source-table composition selected by the TS planner.
+    Shapes/text remain editable. No label, score or numerical value is invented.
+    """
+    columns, rows = plan["columns"], plan["rows"]
+    primary = palette(slide, primary)[0]
+    accent = primary
+    for sh in slide.shapes:
+        fill = sh._element.find(qn("p:spPr") + "/" + qn("a:solidFill") + "/" + qn("a:srgbClr"))
+        if fill is not None and re.fullmatch(r"[0-9a-fA-F]{6}", fill.get("val", "")):
+            rgb = RGBColor.from_string(fill.get("val"))
+            if max(rgb) > 160 and min(rgb) < 140 and max(rgb) - min(rgb) > 40:
+                accent = rgb
+                break
+
+    def rectangle(x, y, w, h, color, rounded=False):
+        sh = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE if rounded else MSO_AUTO_SHAPE_TYPE.RECTANGLE,
+                                    int(x), int(y), max(1, int(w)), max(1, int(h)))
+        sh.name = "AzureChat Visual " + plan["kind"]
+        sh.fill.solid()
+        sh.fill.fore_color.rgb = color
+        sh.line.color.rgb = palette(slide, primary)[1]
+        return sh
+
+    def text(value, x, y, w, h, size=16, color=None, bold=False):
+        return design_text(slide,x,y,w,h,value,max(body_min_pt(ref_font),size),ref_font,color or palette(slide,primary)[2],bold,warnings,
+                           name="AzureChat Visual Text")
+
+    if plan["kind"] == "bar":
+        data = CategoryChartData()
+        data.categories = [str(row[0]) for row in rows]
+        data.add_series(columns[1], plan["values"])
+        design_text(slide,left,top,width,Pt(26),columns[1],14,ref_font,palette(slide,primary)[2],False,warnings,"AzureChat Chart Basis")
+        top += Pt(32)
+        height -= Pt(32)
+        chart_shape = slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, int(left), int(top), int(width), int(height), data)
+        chart_shape.name = "AzureChat Visual Native Bar"
+        chart = chart_shape.chart
+        chart.has_legend = False
+        chart.has_title = False
+        plot = chart.plots[0]
+        plot.has_data_labels = True
+        plot.data_labels.position = XL_LABEL_POSITION.OUTSIDE_END
+        plot.data_labels.font.size = Pt(14)
+        series = chart.series[0]
+        series.format.fill.solid()
+        series.format.fill.fore_color.rgb = primary
+        series.format.line.fill.background()
+        chart.value_axis.minimum_scale = 0
+        chart.value_axis.has_major_gridlines = True
+        chart.value_axis.major_gridlines.format.line.color.rgb = palette(slide, primary)[1]
+        chart.category_axis.tick_labels.font.size = Pt(14)
+        chart.value_axis.tick_labels.font.size = Pt(10)
+        return
+    if plan["kind"] == "comparison":
+        gap = BLOCK_GAP
+        col_w = (width - gap) / 2
+        header_h = height * .16
+        row_h = (height - header_h) / len(rows)
+        for side, col in enumerate((1, 2)):
+            x = left + side * (col_w + gap)
+            color = primary if side else accent
+            rectangle(x, top, col_w, header_h, color)
+            text(columns[col], x + Pt(12), top + Pt(7), col_w - Pt(24), header_h - Pt(14), 22, RGBColor(255, 255, 255), True)
+            for i, row in enumerate(rows):
+                y = top + header_h + i * row_h
+                rectangle(x, y, col_w, row_h, palette(slide, primary)[1])
+                text(row[0], x + Pt(12), y + Pt(6), col_w - Pt(24), row_h * .25, 11, color, True)
+                text(row[col], x + Pt(12), y + row_h * .32, col_w - Pt(24), row_h * .58, 17)
+        return
+    gap = BLOCK_GAP
+    card_w = (width - gap * (len(rows) - 1)) / len(rows)
+    for i, row in enumerate(rows):
+        x = left + i * (card_w + gap)
+        rectangle(x, top, card_w, height, palette(slide, primary)[1], True)
+        badge = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.OVAL, int(x + Pt(12)), int(top + Pt(12)), Pt(30), Pt(30))
+        badge.fill.solid()
+        badge.fill.fore_color.rgb = primary
+        badge.line.fill.background()
+        text(str(i + 1) if plan["kind"] == "process" else "•", x + Pt(20), top + Pt(16), Pt(18), Pt(22), 16, RGBColor(255, 255, 255), True)
+        text(row[0], x + Pt(12), top + height * .25, card_w - Pt(24), height * .2, 21, bold=True)
+        text(row[1], x + Pt(12), top + height * .5, card_w - Pt(24), height * .42, 16)
+        if plan["kind"] == "process" and i < len(rows) - 1:
+            text("›", x + card_w, top + height * .43, gap, Pt(25), 23)
 
 
 def write_content(slide, slide_w, slide_h, body_top, op, ref_body_font, warnings, slide_no, header_rgb=None):
-    margin_x = int(slide_w * 0.06)
+    margin_x = int(max(OUTER_MARGIN, slide_w * 0.04))
     left, width = margin_x, slide_w - margin_x * 2
-    top = body_top + int(slide_h * 0.03)
+    top = body_top + BLOCK_GAP
     sources = [s for s in (op.get("sources") or []) if isinstance(s, dict) and s.get("url")]
     bottom = int(slide_h * 0.88) - (int(Pt(14 * min(3, len(sources)) + 6)) if sources else 0)
-    height = max(int(slide_h * 0.2), bottom - top)
+    caveats = [str(c).strip() for c in (op.get("caveats") or []) if str(c).strip()][:2]
+    caveat_height = int(Pt(38)) if caveats else 0
+    primary, pale, dark = palette(slide, header_rgb)
+    key_message = str(op.get("keyMessage") or "").strip()
+    if key_message:
+        design_text(slide,left,top,width,Pt(38),key_message,22,ref_body_font,primary,True,warnings,"AzureChat Key Message")
+        top += Pt(38) + BLOCK_GAP
+    height = max(int(slide_h * 0.2), bottom - top - caveat_height)
     ref_size = ref_body_font.size.pt if ref_body_font is not None and ref_body_font.size else DEFAULT_BODY_PT
     ref_size = max(MIN_PT, min(24, ref_size))
-    if op.get("kind") == "table" and op.get("table"):
+    if op.get("kind") == "stats":
+        add_stats(slide,left,top,width,height,op.get("stats") or [],ref_body_font,primary,warnings)
+    elif op.get("kind") in ("table", "two_column") and op.get("table"):
+        if op.get("kind") == "two_column":
+            left_w = (width - BLOCK_GAP) * .38
+            design_text(slide,left,top,left_w,height,"\n\n".join(op.get("bullets") or []),max(14,body_min_pt(ref_body_font)),ref_body_font,dark,False,warnings,"AzureChat Two Column Points")
+            left += left_w + BLOCK_GAP
+            width -= left_w + BLOCK_GAP
         table = op["table"]
         columns, rows = table.get("columns") or [], table.get("rows") or []
-        if company_card_column(columns) is not None and 1 <= len(rows) <= 6 and len(columns) <= 3:
-            add_company_cards(slide, left, top, width, height, columns, rows, ref_body_font, header_rgb)
+        composition = op.get("composition")
+        if (isinstance(composition, dict) and composition.get("kind") in ("process", "classification", "comparison", "bar")
+                and composition.get("columns") == columns and composition.get("rows") == rows):
+            add_visual_composition(slide, left, top, width, height, composition, ref_body_font, primary, warnings)
+        elif company_card_column(columns) is not None and 1 <= len(rows) <= 6 and len(columns) <= 3:
+            add_company_cards(slide, left, top, width, height, columns, rows, ref_body_font, primary, warnings)
         else:
-            add_table(slide, left, top, width, height, columns, rows, ref_body_font, ref_size, header_rgb)
+            add_table(slide, left, top, width, height, columns, rows, ref_body_font, ref_size, primary, warnings)
         if len(table.get("rows") or []) > 6 or len(table.get("columns") or []) > 5:
             warnings.append(f"P{slide_no}: 表は6行×5列までのため、超えた行・列を省略しました。")
     elif op.get("bullets"):
         bullets = [str(b).strip() for b in op["bullets"] if str(b).strip()][:6]
-        _, _, omitted = add_bullets_box(slide, left, top, width, height, bullets, ref_body_font, ref_size)
+        panel = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, int(left), int(top), int(width), int(height))
+        panel.name = "AzureChat Summary Panel"
+        panel.fill.solid()
+        panel.fill.fore_color.rgb = pale
+        panel.line.fill.background()
+        left, top, width, height = left+Pt(14), top+Pt(14), width-Pt(28), height-Pt(28)
+        design_text(slide,left,top,width,height,"\n\n".join(bullets),max(body_min_pt(ref_body_font),min(18,ref_size)),ref_body_font,dark,False,warnings,"AzureChat Summary Text")
+        omitted = 0
         if len(op["bullets"]) > 6:
             omitted += len(op["bullets"]) - 6
         if omitted:
             warnings.append(f"P{slide_no}: 収まらないため箇条書き{omitted}項目を省略しました。")
+    left, width = margin_x, slide_w - margin_x * 2
+    if caveats:
+        box = slide.shapes.add_textbox(left, bottom - caveat_height, width, caveat_height)
+        box.name = "AzureChat Qualifications"
+        set_shape_text(box, "\n".join(caveats))
+        for paragraph in box.text_frame.paragraphs:
+            for run in paragraph.runs:
+                apply_font(run, ref_body_font, 11)
     if sources:
         add_sources(slide, left, bottom + int(Pt(4)), width, sources, ref_body_font)
 
@@ -437,7 +625,7 @@ def op_add_slide(prs, op, warnings):
     ref_body_font = first_run_font(body_text_shapes(ref, slide_h))
     new, body_top = clone_frame(prs, ref, slide_h)
     title = new_title_shape(new, slide_h)
-    title_text = str(op.get("title") or "").strip()[:60]
+    title_text = str(op.get("title") or "").strip()[:60].rstrip("。．.")
     if title is not None:
         set_shape_text(title, title_text)
     elif title_text:
@@ -570,8 +758,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--plan", required=True)
+    parser.add_argument("--plan")
+    parser.add_argument("--review-slides")
     args = parser.parse_args()
+    if args.review_slides is not None:
+        selected = {int(value) for value in args.review_slides.split(",") if value.isdigit()}
+        prs = Presentation(args.input)
+        if not selected or min(selected) < 0 or max(selected) >= len(prs.slides):
+            raise ValueError("Invalid review slide indices")
+        for index in range(len(prs.slides)-1, -1, -1):
+            if index not in selected:
+                element = prs.slides._sldIdLst[index]
+                prs.part.drop_rel(element.rId)
+                prs.slides._sldIdLst.remove(element)
+        prs.save(args.output)
+        return
+    if not args.plan:
+        parser.error("--plan is required for editing")
     with open(args.plan, encoding="utf-8") as f:
         plan = json.load(f)
     prs = Presentation(args.input)

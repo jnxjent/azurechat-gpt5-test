@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: "20.x"
 
+      - name: Set up Python for structural PPT tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: ⚙️ npm install and build
         run: |
           cd ./src
@@ -33,6 +38,11 @@ jobs:
           node scripts/test-skill-personal.cjs
           node scripts/test-pptx-structure-edit.cjs
           node scripts/test-pptx-structure-image-boundary.cjs
+          node scripts/test-ppt-visual-composition.cjs
+          node scripts/test-ppt-layout-source-policy.cjs
+          node scripts/test-ppt-structure-stream.cjs
+          python3 -m pip install python-pptx
+          python3 scripts/test_pptx_visual_composition.py
           node scripts/test-skill-report-delivery.cjs
           node scripts/test-skill-progress-evidence.cjs
           node scripts/test-skill-suggestions.cjs

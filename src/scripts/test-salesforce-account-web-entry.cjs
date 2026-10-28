@@ -27,6 +27,8 @@ const services={
 const cache=new Map();
 function load(relative){const filename=path.resolve(__dirname,'..',relative);if(cache.has(filename))return cache.get(filename);const mod=new Module(filename);mod.filename=filename;mod.paths=Module._nodeModulePaths(path.dirname(filename));const normal=mod.require.bind(mod);mod.require=name=>{
  if(name==='server-only')return {};
+ if(name==='./document-source-policy')return load('features/chat-page/chat-services/chat-api/document-source-policy.ts');
+ if(name==='./visual-composition')return load('features/pptx/visual-composition.ts');
  if(name==='@/features/pptx/structure-edit-intent')return load('features/pptx/structure-edit-intent.ts');
  if(name==='@/features/common/services/salesforce-opportunity-context')return services;
  if(name==='./chat-api-extension')return load('features/chat-page/chat-services/chat-api/chat-api-extension.ts');

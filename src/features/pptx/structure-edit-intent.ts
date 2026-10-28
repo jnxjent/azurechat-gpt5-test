@@ -1,3 +1,5 @@
+import { buildVisualComposition, type VisualComposition } from "./visual-composition";
+
 /**
  * Structural PPTX edits handled by scripts/pptx_structure_edit.py:
  * slide insertion, filling an empty slide, and font-size changes.
@@ -9,10 +11,15 @@
 
 export type PptxStructureContent = {
   title: string;
-  kind: "bullets" | "table";
+  kind: "bullets" | "table" | "stats" | "two_column";
+  keyMessage?: string;
+  stats?: { label: string; value: string; period?: string; unit?: string }[];
   bullets?: string[];
   table?: { columns: string[]; rows: string[][] };
   sources?: { label: string; url: string }[];
+  composition?: VisualComposition;
+  visualLayout?: "table";
+  caveats?: string[];
 };
 
 export type PptxStructureOp =
@@ -123,15 +130,29 @@ export function isPptxStructureEditRequest(message: string): boolean {
 const str = (value: unknown, max: number) => String(value ?? "").trim().slice(0, max);
 
 function sanitizeContent(op: Record<string, unknown>): Partial<PptxStructureContent> {
-  const out: Partial<PptxStructureContent> = { title: str(op.title, 60) };
+  const out: Partial<PptxStructureContent> = { title: str(op.title, 60).replace(/[。．.]+$/, "") };
+  if (typeof op.keyMessage === "string") out.keyMessage = str(op.keyMessage, 30);
+  if (Array.isArray(op.stats)) out.stats = op.stats.slice(0, 4).map((raw) => {
+    const item = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    return { label: str(item.label, 40), value: str(item.value, 30), period: str(item.period, 30), unit: str(item.unit, 20) };
+  }).filter(item => item.label && item.value);
+  if (op.kind === "stats" && out.stats && out.stats.length >= 2) out.kind = "stats";
   const table = op.table as { columns?: unknown; rows?: unknown } | undefined;
-  if (op.kind === "table" && table && Array.isArray(table.columns) && Array.isArray(table.rows)) {
+  if ((op.kind === "table" || op.kind === "two_column") && table && Array.isArray(table.columns) && Array.isArray(table.rows)) {
     const columns = table.columns.map((c) => str(c, 30)).filter(Boolean).slice(0, 5);
     const rows = table.rows.filter(Array.isArray).map((row) => (row as unknown[]).map((c) => str(c, 80)).slice(0, columns.length)).filter((row) => row.some(Boolean)).slice(0, 6);
     if (columns.length && rows.length) Object.assign(out, { kind: "table", table: { columns, rows } });
   } else if (Array.isArray(op.bullets)) {
     const bullets = op.bullets.map((b) => str(b, 120)).filter(Boolean).slice(0, 8);
     if (bullets.length) Object.assign(out, { kind: "bullets", bullets });
+  }
+  if (op.kind === "two_column" && out.table && Array.isArray(op.bullets)) {
+    out.kind = "two_column";
+    out.bullets = op.bullets.map(b => str(b, 80)).filter(Boolean).slice(0, 4);
+    if (!out.bullets.length) out.kind = "table";
+  }
+  if (Array.isArray(op.caveats)) {
+    out.caveats = op.caveats.map(c => str(c, 120)).filter(Boolean).slice(0, 2);
   }
   if (Array.isArray(op.sources)) {
     const sources = op.sources
@@ -140,6 +161,8 @@ function sanitizeContent(op: Record<string, unknown>): Partial<PptxStructureCont
       .slice(0, 3);
     if (sources.length) out.sources = sources;
   }
+  if (op.visualLayout === "table") out.visualLayout = "table";
+  if (out.table && !out.visualLayout) out.composition = buildVisualComposition(out.title ?? "", out.table.columns, out.table.rows);
   return out;
 }
 
@@ -154,14 +177,26 @@ const normalizeForMatch = (value: string) =>
 export function verifyPptxStructureContent(slides: unknown, sourceText: string): { slides: PptxStructureContent[]; warnings: string[] } {
   const source = normalizeForMatch(sourceText);
   const numbersOk = (text: string) =>
-    (text.normalize("NFKC").replace(/(\d),(\d)/g, "$1$2").match(/\d+(?:\.\d+)?/g) ?? []).every((n) => source.includes(n));
+    (text.normalize("NFKC").replace(/(\d),(\d)/g, "$1$2").match(/\d+(?:\.\d+)?/g) ?? []).every((n) => new RegExp(`(?<![\\d.])${n.replace(/\./g, "\\.")}(?![\\d.])`).test(source));
   const warnings: string[] = [];
   const kept: PptxStructureContent[] = [];
   for (const raw of Array.isArray(slides) ? slides : []) {
     const content = sanitizeContent({ ...(raw as Record<string, unknown>) });
     if (!content.title) continue;
+    if (content.keyMessage && !source.includes(normalizeForMatch(content.keyMessage))) {
+      delete content.keyMessage;
+      warnings.push(`「${content.title}」: 根拠を確認できない結論文を掲載していません。`);
+    }
+    if (content.stats) {
+      // Label, value, unit and period must co-occur in one source line.
+      content.stats = content.stats.filter(item => sourceText.split(/\r?\n/).some(line =>
+        [item.label, item.value, item.period, item.unit].filter(Boolean).every(value => normalizeForMatch(line).includes(normalizeForMatch(value!)))));
+      if (content.kind === "stats" && content.stats.length < 2) content.kind = undefined;
+    }
+    if (content.kind === "two_column" && content.bullets) content.bullets = content.bullets.filter(b => source.includes(normalizeForMatch(b)));
+    if (content.caveats) content.caveats = content.caveats.filter(numbersOk);
     let dropped = 0;
-    if (content.kind === "table" && content.table) {
+    if ((content.kind === "table" || content.kind === "two_column") && content.table) {
       const keyColumn = content.table.columns.findIndex((_, c) => content.table!.rows.some((row) => row[c] && !/^[\d.\s%]+$/.test(row[c])));
       const rows = content.table.rows.filter((row) => {
         const ok = row.every(numbersOk) && (keyColumn < 0 || !row[keyColumn] || source.includes(normalizeForMatch(row[keyColumn])));
@@ -169,7 +204,21 @@ export function verifyPptxStructureContent(slides: unknown, sourceText: string):
         return ok;
       });
       content.table = { ...content.table, rows };
+      content.composition = content.visualLayout ? undefined : buildVisualComposition(content.title ?? "", content.table.columns, rows);
+      if (content.composition?.kind === "bar") {
+        const exact = (value: string) => value.normalize("NFKC").replace(/[\s,|]/g, "").toLowerCase();
+        const lines = sourceText.split(/\r?\n/).map(exact);
+        if (!exact(sourceText).includes(exact(content.table.columns[1])) ||
+            !rows.every(row => lines.some(line => line.includes(row.map(exact).join(""))))) {
+          // Missing entity/value association or comparison basis: keep the
+          // readable table instead of visually asserting a quantitative rank.
+          content.composition = undefined;
+          content.visualLayout = "table";
+          warnings.push(`「${content.title}」: 同じ比較条件と企業別の数値対応を元文で確認できないため、グラフにせず表で表示します。`);
+        }
+      }
       if (!rows.length) content.kind = undefined;
+      else if (content.kind === "two_column" && !content.bullets?.length) content.kind = "table";
     } else if (content.kind === "bullets" && content.bullets) {
       content.bullets = content.bullets.filter((b) => {
         const ok = numbersOk(b);

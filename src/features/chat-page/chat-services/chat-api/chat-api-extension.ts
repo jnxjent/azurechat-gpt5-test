@@ -1,5 +1,6 @@
 "use server";
 import "server-only";
+import { allowsLibrarySearch } from "./document-source-policy";
 import { salesforcePersonalHeaders, assertPersonalSalesforceResponse, isPersonalSalesforceUser, personalSalesforceBase } from "@/features/common/services/salesforce-personal";
 import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 
@@ -252,7 +253,9 @@ export const ChatApiExtensions = async (props: {
   const openAI = OpenAIInstance();
   const inferredSlTarget = inferSlSearchTarget(userMessage);
 
-  const extensionsSteps = await extensionsSystemMessage(chatThread);
+  const selectedExtensions = await extensionsSystemMessage(chatThread);
+  const extensionsSteps = selectedExtensions.steps;
+  const librarySearchAllowed = allowsLibrarySearch(userMessage, selectedExtensions.names, salesforceRouting.route === "knowledge");
 
   const todayJST = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
@@ -310,7 +313,8 @@ export const ChatApiExtensions = async (props: {
   const slSearchName = process.env.AZURE_SEARCH_NAME?.trim() || "";
   const slIndexName = process.env.AZURE_SEARCH_INDEX_NAME?.trim() || "";
 
-  if (slApiKey && slSearchName && slIndexName) {
+  console.log("[document-source] librarySearchAllowed=", librarySearchAllowed);
+  if (librarySearchAllowed && slApiKey && slSearchName && slIndexName) {
     const { deptLower: slDeptLower, userHash: slUserHash } = await resolveUserContext();
     const slFilter = `(chatThreadId eq '${(chatThread.id ?? "").replace(/'/g, "''")}' or isSlDoc eq true)`;
     let slSearchCallCount = 0;
@@ -939,8 +943,9 @@ const extensionsSystemMessage = async (chatThread: ChatThreadModel) => {
   const results = await Promise.all(
     chatThread.extension.map((e) => FindExtensionByID(e))
   );
-  return results
-    .filter((r) => r.status === "OK")
-    .map((r) => ` ${r.response.executionSteps} \n`)
-    .join("");
+  const selected = results.filter((r) => r.status === "OK");
+  return {
+    names: selected.map(r => r.response.name),
+    steps: selected.map(r => ` ${r.response.executionSteps} \n`).join(""),
+  };
 };

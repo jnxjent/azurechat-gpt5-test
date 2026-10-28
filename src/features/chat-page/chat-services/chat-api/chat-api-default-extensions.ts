@@ -58,7 +58,9 @@ import {
 } from "./image/image-intent";
 import { normalizeGptImageQuality } from "./image/image-quality";
 import { generateStoredChatImage } from "./image/image-generation-service";
-import { isCompanyProfileContent, PPT_PRODUCTION_INSTRUCTION, removePptProductionNotes } from "@/features/pptx/output-intent";
+import { isCompanyProfileContent, PPT_PRODUCTION_INSTRUCTION as PPT_BASE_PRODUCTION_INSTRUCTION, removePptProductionNotes } from "@/features/pptx/output-intent";
+import { PPT_VISUAL_COMPOSITION_RULES } from "@/features/pptx/visual-composition";
+const PPT_PRODUCTION_INSTRUCTION = PPT_BASE_PRODUCTION_INSTRUCTION + "\n" + PPT_VISUAL_COMPOSITION_RULES;
 import { resolveWordEditInstruction } from "./word-edit-instruction";
 import { detectWholeWordTranslationLanguage } from "./word-translation-intent";
 
