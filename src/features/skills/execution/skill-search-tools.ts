@@ -18,6 +18,7 @@ import type { SelectedSearchAccount } from "./skill-search-continuation";
 import { readFiscalPeriod, type FiscalPeriod } from "./skill-search-requirements";
 import { resolveSkillSalesforceScope, buildSkillSalesforceQuery, SkillQueryContextError } from "./skill-salesforce-scope";
 import { skillGatewayThread } from "@/features/common/services/salesforce-proof-thread";
+import { progressEvidence } from "./skill-progress-evidence";
 
 function skillRecoverableReadError(source: SearchSource, body: any, httpStatus: number): SkillSearchResult | undefined {
   // Candidate/identity/permission decisions remain authoritative. Never let a
@@ -54,7 +55,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
   const citationResults: string[] = [];
   const contextResults: string[] = [];
   const trace: Array<{ source: SearchSource; status: string; truncated?: boolean }> = [];
-  async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown, scope?: unknown): Promise<SkillSearchResult> {
+  async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown, scope?: unknown, presentation?: {progressPrefetch:true}): Promise<SkillSearchResult> {
     const started = Date.now();
     let result: SkillSearchResult;
     try {
@@ -85,13 +86,13 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       result = error instanceof SkillQueryContextError ? { source, status: "error", reason: error.reason, message: error.message } : { source, status: "error", reason: props.signal.aborted ? "cancelled" : error instanceof TypeError ? "invalid_input_or_connection" : error instanceof Error && error.message === "timeout" ? "timeout" : "connection_failed", message: "検索を完了できませんでした。接続失敗・タイムアウト等のため、データの有無は判断できません。" };
       }
     }
-    result = boundSearchResult(result);
+    result = boundSearchResult(presentation?.progressPrefetch ? progressEvidence(result, new Intl.DateTimeFormat("sv-SE", {timeZone:"Asia/Tokyo"}).format(new Date())) : result);
     if (source === "documents" && Array.isArray(result.data)) {
       const markup = formatCitationMarkup(result.data);
       if (markup) citationResults.push(markup);
     }
     trace.push({ source, status: result.status, ...(result.truncated ? { truncated: true } : {}) });
-    console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? personal ? "personal" : process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, returnedObject:result.returnedObject ?? null, requestedTarget:result.requestedTarget ?? null, planVersion:result.planVersion ?? null, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
+    console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? personal ? "personal" : process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, returnedObject:result.returnedObject ?? null, requestedTarget:result.requestedTarget ?? null, planVersion:result.planVersion ?? null, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, fetchedCount:result.fetchedCount ?? null, modelVisibleCount:result.modelVisibleCount ?? null, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
     return result;
   }
   async function search(source: SearchSource, query: string, suppliedCompany?: unknown, suppliedOperation?: unknown, suppliedScope?: unknown): Promise<SkillSearchResult> {
@@ -256,7 +257,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       if (personal && !props.selectedAccount && lookup && body.object === "Account" && !body.truncated && body.items.length === 1 && /^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(body.items[0].Id)) {
         props.selectedAccount = {id:body.items[0].Id,name:body.items[0].Name};
       }
-      return { source, returnedObject:body.object, requestedTarget:operation, planVersion:body.plan_version, status: body.items.length ? "ok" : "empty", reason: excludedCount ? "partial_verified_results" : "query_completed", queryCount: typeof body.query_count === "number" ? body.query_count : undefined, excludedCount, data: body.items, ...(body.truncated ? { truncated: true } : {}), message: JSON.stringify({ ...salesforceReadMetadata(body), instruction: salesforceReadInstruction, object: body.object ?? "不明", contract: body.contract, notices: body.notices, appliedFilters: body.applied_filters, order: body.order, limits: body.limits, displayHint: body.display_hint ?? "不明", resolvedAccountName: body.resolved_account_name ?? null, returnedCount: body.items.length, totalCount: body.total_count ?? null, excludedCount, guidance: "一致を検証できない行を除外している場合は除外件数を明示する。OwnerNameは社内の担当営業。上限取得や除外後の一部を全件集計に使わない。指定期間等が実際の適用条件にない場合はその制限も明示する。" }) };
+      return { source, fetchedCount:body.items.length, modelVisibleCount:body.items.length, totalCount:body.total_count ?? null, appliedFilters:body.applied_filters, returnedObject:body.object, requestedTarget:operation, planVersion:body.plan_version, status: body.items.length ? "ok" : "empty", reason: excludedCount ? "partial_verified_results" : "query_completed", queryCount: typeof body.query_count === "number" ? body.query_count : undefined, excludedCount, data: body.items, ...(body.truncated ? { truncated: true } : {}), message: JSON.stringify({ ...salesforceReadMetadata(body), instruction: salesforceReadInstruction, object: body.object ?? "不明", contract: body.contract, notices: body.notices, appliedFilters: body.applied_filters, order: body.order, limits: body.limits, displayHint: body.display_hint ?? "不明", resolvedAccountName: body.resolved_account_name ?? null, returnedCount: body.items.length, totalCount: body.total_count ?? null, excludedCount, guidance: "一致を検証できない行を除外している場合は除外件数を明示する。OwnerNameは社内の担当営業。上限取得や除外後の一部を全件集計に使わない。指定期間等が実際の適用条件にない場合はその制限も明示する。" }) };
     }
     if (source === "web") {
       if (!isTeamsBraveSearchConfigured()) return { source, status: "unavailable", message: "Web検索未設定です。" };

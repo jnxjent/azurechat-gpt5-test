@@ -280,6 +280,13 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   planning=[];planned=[lookupCall];const beforeTeamsLookup=fetches.length;
   const teamsReply=await handleTeamsSkill({...teamsProps,activityId:'execute-lookup',message:'',value:suggestion.card.actions[0].data});
   assert.ok(teamsReply.text.includes('取得できた営業進捗'));assert.equal(fetches.length,beforeTeamsLookup+1);
+  const beforePrepare=fetches.length,beforePlan=planning.length;
+  const directProps={...teamsProps,activityId:'direct-preflight',message:`Skill「${catalog[0].title}」を使って、${lookupMessage}`};
+  const prepared=await handleTeamsSkill({...directProps,prepareOnly:true});
+  assert.equal(prepared.preparedSubmission.feature,'ac.skill');assert.equal(fetches.length,beforePrepare);assert.equal(planning.length,beforePlan,'Direct selection preflight must not search or generate');
+  planned=[lookupCall];
+  const directReply=await handleTeamsSkill({...directProps,message:'',value:prepared.preparedSubmission});
+  assert.ok(directReply.text.includes('取得できた営業進捗'));assert.equal(fetches.length,beforePrepare+1,'Execution cannot reuse the preflight cache entry');
   assert.deepEqual(planning[0].tool_choice,{type:'function',function:{name:'skill_search_salesforce'}});
   assert.ok(fetches.at(-1).target.searchParams.get('q').includes('社内担当営業: 黄'));
   const teamsGatewayThread=fetches.at(-1).options.headers['X-Chat-Thread-Id'];assert.notEqual(teamsGatewayThread,'teams-verified-conversation');
@@ -339,8 +346,19 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
     for(const f of sent){assert.equal(f.target.origin,'https://personal.test');assert.equal(f.target.pathname,'/api/skills/salesforce/search');assert.equal(JSON.parse(f.options.body).planVersion,'SF_READ_PLAN_V2');}
     planned=[];const beforePrefetch=fetches.length;
     await runSkillSearch({...runnerProps,skills:[{...runnerProps.skills[0],content:'SalesforceのAccount・Opportunity・Activityを検索する'}],chatThread:{id:channel==='teams'?'teams-prefetch':'web-prefetch'},message:reportRequest,originalRequest:reportRequest,history:[],selectedAccount:undefined,selectedAccountRecord:undefined});
-    assert.deepEqual(fetches.slice(beforePrefetch).map(f=>JSON.parse(f.options.body).plan.object),['Account','Opportunity','Activity'],'Basic progress must fetch required objects even if the model makes no tool calls');
+    const progressPlans=fetches.slice(beforePrefetch).map(f=>JSON.parse(f.options.body).plan);
+    assert.deepEqual(progressPlans.map(p=>p.object),['Account','Opportunity','Opportunity','Opportunity','Activity'],'Progress includes separate won/lost reads even if the model makes no tool calls');
+    assert.deepEqual(progressPlans.filter(p=>p.object==='Opportunity').map(p=>p.stage?.value??null),['open','won','lost']);
   }
+  const amountOrder=[
+    {Id:'006000000000001AAA',Name:'high amount',Amount:200,StageName:'見積提示',CloseDate:'2027-01-01',LastActivityDate:'2026-10-27'},
+    {Id:'006000000000002AAA',Name:'low amount overdue',Amount:100,StageName:'見積提示',CloseDate:'2020-01-01',LastActivityDate:null},
+  ];
+  issueQueue=[{status:200,body:{ok:true,object:'Opportunity',plan_version:'SF_READ_PLAN_V2',items:amountOrder,order:{field:'Amount',direction:'DESC'},snapshot_proof:'proof-order'}}];
+  const ordered=await createSkillSearchTools({...props,userMessage:'黄さんの商談'}).execute('salesforce','商談一覧',undefined,'opportunities',{owner:'黄',target:'opportunities',unsupportedConditions:[]});
+  assert.equal(ordered.status,'ok');
+  assert.deepEqual(ordered.data.map(row=>row.Id),amountOrder.map(row=>row.Id),'Ordinary search preserves Gateway ordering');
+  assert.ok(ordered.data.every(row=>!row.progressEvidence),'Ordinary search does not receive progress annotations');
   delete process.env.SF_SKILL_READ_V2_ENABLED;
   console.log('PASS personal Skill signing, exact principal/thread/body, no shared fallback, proof lineage and current-access recheck');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,12 +1,15 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript');
-const handlers={},skillCalls=[];let pendingOffice,scheduling,normalCalls=0,identityFails=false;
+const handlers={},skillCalls=[],acceptedJobs=[];let pendingOffice,scheduling,normalCalls=0,identityFails=false;
 const actor={email:'owner@example.test',salesforcePrincipal:'tenant:owner'};
 Object.assign(process.env,{TEAMS_ENABLED:'true',TEAMS_BOT_ID:'bot',TEAMS_BOT_SECRET:'test-only',TEAMS_TENANT_ID:'tenant',TEAMS_SKIP_AUTH:'false',SKILL_SEARCH_ENABLED:'true',SF_PERSONAL_MODE:'false'});
 const stubs={
  'server-only':{},
  '@microsoft/teams.apps':{App:class{on(name,handler){handlers[name]=handler;}async initialize(){}}},
  './next-http-adapter':{NextHttpAdapter:class{}},
- './teams-skill-service':{skillSubmission:()=>undefined,handleTeamsSkill:async props=>{skillCalls.push(props.message);return {card:{type:'AdaptiveCard',body:[],actions:[]}};}},
+ '@/features/skills/skill-rules':{requestsSkillReference:text=>text.startsWith('Skill')},
+ './teams-skill-jobs':{acceptTeamsSkillJob:async props=>{acceptedJobs.push(props);return 'accepted';},boundedSkillTask:p=>p,skillReceiptBudget:()=>({deadline:Date.now()+9500}),skillReceiptRemaining:(_b,max)=>max,sendSkillReceipt:(send,receipt)=>send(receipt)},
+ './teams-skill-delivery':{deliverTeamsSkillReply:async(reply,send)=>{if(reply.text)await send(reply.text);if(reply.card)await send({type:'message',attachments:[{contentType:'application/vnd.microsoft.card.adaptive',content:reply.card}]});}},
+ './teams-skill-service':{skillSubmission:value=>value?.feature==='ac.skill'?value:undefined,handleTeamsSkill:async props=>{skillCalls.push(props.message);assert.equal(props.prepareOnly,true);return props.message.startsWith('Skill')?{preparedSubmission:{feature:'ac.skill',token:'direct'}}:{card:{type:'AdaptiveCard',body:[],actions:[]}};}},
  './teams-canvas-service':{isTeamsCanvasRequest:()=>false,resolveTeamsSkillActor:async activity=>{if(identityFails)throw Error('identity unavailable');assert.equal(activity.conversation.conversationType,'personal');return actor;}},
  './teams-file-service':{receiveTeamsFiles:async()=>[],readLatestTeamsFiles:async()=>[],buildTeamsTextAttachmentContext:()=>''},
  './teams-file-policy':{stripTeamsAttachmentMarkup:text=>text,referencesTeamsUpload:()=>false},
@@ -36,6 +39,11 @@ async function message(text,type='personal'){
 }
 (async()=>{
  await loaded.exports.getTeamsRuntime();
+ const buttonSends=[];
+ const button={activity:{id:'button',channelId:'msteams',conversation:{id:'conversation',conversationType:'personal'},from:{id:'user'},value:{feature:'ac.skill',token:'fixture'}},api:{},send:async value=>buttonSends.push(value)};
+ const receipt=await handlers['card.action'](button);
+ assert.equal(receipt.value,'accepted');assert.equal(acceptedJobs.length,1);assert.equal(buttonSends.length,0,'Card action returns only ACK; no final report in send and invoke');
+ await handlers['message.ext.card-button-clicked'](button);assert.equal(acceptedJobs.length,2);assert.deepEqual(buttonSends,['accepted']);
  let sent=await message('黄さんの営業進捗をレポートにまとめて');
  assert.equal(skillCalls.length,1);assert.equal(sent[0].attachments[0].content.type,'AdaptiveCard');
  sent=await message('倉庫の在庫補充計画を立てて');assert.equal(skillCalls.length,2,'arbitrary Skills reach candidate matching without a fixed intent gate');
@@ -50,5 +58,8 @@ async function message(text,type='personal'){
  sent=await message('黄さんの営業進捗をレポートにまとめて');
  assert.ok(sent[0].includes('本人確認'));assert.equal(normalCalls,3);assert.equal(skillCalls.length,2,'Unauthenticated sales report must not search SF or internal documents');
  await message('こんにちは、今日もよろしく');assert.equal(normalCalls,4,'Ordinary conversation remains available');
+ identityFails=false;
+ const direct=await message('Skill「営業進捗」を使って、黄さんの状況をまとめて');
+ assert.ok(direct.includes('accepted'));assert.equal(acceptedJobs.at(-1).direct,true);assert.equal(typeof acceptedJobs.at(-1).onCompleted,'function');
  console.log('PASS actual Teams message route: general Skill candidates, Office/scheduling priority, personal-chat scope, feature flag and long-chat fallback');
 })().catch(error=>{console.error(error);process.exitCode=1;});

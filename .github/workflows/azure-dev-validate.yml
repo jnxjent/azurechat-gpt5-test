@@ -31,6 +31,8 @@ jobs:
           node scripts/test-skills.cjs
           node scripts/test-skill-search.cjs
           node scripts/test-skill-personal.cjs
+          node scripts/test-skill-report-delivery.cjs
+          node scripts/test-skill-progress-evidence.cjs
           node scripts/test-skill-suggestions.cjs
           node scripts/test-skill-selection-transport.cjs
           node scripts/test-teams-skill-routing.cjs

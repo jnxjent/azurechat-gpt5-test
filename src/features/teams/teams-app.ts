@@ -1,5 +1,8 @@
 import { handleTeamsSkill, skillSubmission } from "./teams-skill-service";
 import { resolveTeamsSkillActor } from "./teams-canvas-service";
+import { acceptTeamsSkillJob, boundedSkillTask, skillReceiptBudget, skillReceiptRemaining, sendSkillReceipt } from "./teams-skill-jobs";
+import { deliverTeamsSkillReply } from "./teams-skill-delivery";
+import { requestsSkillReference } from "@/features/skills/skill-rules";
 import { isExcelTableToSlideRequest } from "@/features/pptx/output-intent";
 import "server-only";
 import { prepareTeamsAutomaticMemory } from "@/features/memory/automatic-memory-service";
@@ -128,11 +131,12 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
   app.on("card.action",async({activity,api,send})=>{
     if(skillSubmission(activity.value)) {
       try {
-        const actor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
-        const reply=await handleTeamsSkill({actor,conversation:activity.conversation.id,activityId:String(activity.id??""),message:"",value:activity.value,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
-        if(reply?.text)await send(reply.text);
-        return reply?.card?{statusCode:200 as const,type:"application/vnd.microsoft.card.adaptive" as const,value:reply.card}:{statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:reply?.text??"依頼を送り直してください。"};
-      }catch {return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"本人確認またはスキルの実行に失敗しました。依頼を送り直してください。"};}
+        const budget=skillReceiptBudget("invoke");
+        const actor=await boundedSkillTask(resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi),skillReceiptRemaining(budget,4000));
+        const receipt=await acceptTeamsSkillJob({actor,conversation:activity.conversation.id,activityId:String(activity.id??""),value:activity.value,send,budget,
+          onCompleted:()=>recordCompletedTeamsTurn({conversationId:activity.conversation.id,activityId:String(activity.id??""),teamsUserId:activity.from?.id})});
+        return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:receipt};
+      }catch {return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"本人確認または受付に失敗しました。検索は受け付けられていません。依頼を送り直してください。"};}
     }
     if(!isTeamsCanvasSubmission(activity.value))return {statusCode:200 as const,type:"application/vnd.microsoft.activity.message" as const,value:"このカードの操作には対応していません。"};
     const result=await handleTeamsCanvas(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
@@ -145,11 +149,12 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
   app.on("message.ext.card-button-clicked",async({activity,api,send})=>{
     if(skillSubmission(activity.value)) {
       try {
-        const actor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
-        const reply=await handleTeamsSkill({actor,conversation:activity.conversation.id,activityId:String(activity.id??""),message:"",value:activity.value,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
-        if(reply?.text)await send(reply.text);
-        if(reply?.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
-      }catch {await send("本人確認またはスキルの実行に失敗しました。依頼を送り直してください。");}
+        const budget=skillReceiptBudget("message");
+        const actor=await boundedSkillTask(resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi),skillReceiptRemaining(budget,4000));
+        const receipt=await acceptTeamsSkillJob({actor,conversation:activity.conversation.id,activityId:String(activity.id??""),value:activity.value,send,budget,
+          onCompleted:()=>recordCompletedTeamsTurn({conversationId:activity.conversation.id,activityId:String(activity.id??""),teamsUserId:activity.from?.id})});
+        await sendSkillReceipt(send,receipt,budget);
+      }catch {await boundedSkillTask(send("本人確認または受付に失敗しました。依頼を送り直してください。"),500).catch(()=>{});}
       return;
     }
     if(!isTeamsCanvasSubmission(activity.value))return;
@@ -177,11 +182,27 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         return;
       }
       if(skillSubmission(activity.value)) {
-        const actor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);
-        const reply=await handleTeamsSkill({actor,conversation:conversationId,activityId,message:text,value:activity.value,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
-        if(reply?.text)await send(reply.text);
-        if(reply?.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
-        await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId:activity.from?.id});
+        const budget=skillReceiptBudget("message");
+        const actor=await boundedSkillTask(resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi),skillReceiptRemaining(budget,4000));
+        const receipt=await acceptTeamsSkillJob({actor,conversation:conversationId,activityId,value:activity.value,send,budget,
+          onCompleted:()=>recordCompletedTeamsTurn({conversationId,activityId,teamsUserId:activity.from?.id})});
+        await sendSkillReceipt(send,receipt,budget);
+        return;
+      }
+      // An explicit Skill request must not wait for unrelated file/memory/chat
+      // processing before admission. Selection is read-only; execution is a job.
+      if(requestsSkillReference(text)){
+        const budget=skillReceiptBudget("message");
+        const actor=await boundedSkillTask(resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi),skillReceiptRemaining(budget,4000));
+        const reply=await boundedSkillTask(handleTeamsSkill({actor,conversation:conversationId,activityId,message:text,prepareOnly:true}),skillReceiptRemaining(budget,4000));
+        if(reply?.preparedSubmission){
+          const receipt=await acceptTeamsSkillJob({actor,conversation:conversationId,activityId,value:reply.preparedSubmission,send,budget,direct:true,
+            onCompleted:()=>recordCompletedTeamsTurn({conversationId,activityId,teamsUserId:activity.from?.id})});
+          await sendSkillReceipt(send,receipt,budget);
+        }else if(reply){
+          await boundedSkillTask(deliverTeamsSkillReply(reply,send),skillReceiptRemaining(budget,2000));
+          await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId:activity.from?.id});
+        }
         return;
       }
       const teamsThreadId = buildTeamsThreadId(conversationId);
@@ -290,10 +311,15 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
         let skillActor=verifiedPersonalActor;
         if(!skillActor)try {skillActor=await resolveTeamsSkillActor(activity as CanvasTeamsActivity,api as CanvasTeamsApi);}catch { /* No unverified catalog access. */ }
         if(skillActor) {
-          const reply=await handleTeamsSkill({actor:skillActor,conversation:conversationId,activityId,message:messageText,onWaiting:async()=>{await send("スキルで情報を確認しています。");}});
+          const budget=skillReceiptBudget("message");
+          const reply=await boundedSkillTask(handleTeamsSkill({actor:skillActor,conversation:conversationId,activityId,message:messageText,prepareOnly:true}),skillReceiptRemaining(budget,4000));
           if(reply) {
-            if(reply.text)await send(reply.text);
-            if(reply.card)await send({type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",content:reply.card}]});
+            if(reply.preparedSubmission){
+              const receipt=await acceptTeamsSkillJob({actor:skillActor,conversation:conversationId,activityId,value:reply.preparedSubmission,send,budget,direct:true,
+                onCompleted:()=>recordCompletedTeamsTurn({conversationId,activityId,teamsUserId})});
+              await sendSkillReceipt(send,receipt,budget);return;
+            }
+            await deliverTeamsSkillReply(reply,send);
             await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});
             return;
           }

@@ -146,6 +146,7 @@ export const OpenAIStream = (props: {
   runner: ChatCompletionStreamingRunner;
   chatThread: ChatThreadModel;
   memoryReference?: string;
+  finalizeContent?: (content: string) => string;
   initialToolResults?: string[];
   historySnapshot?: ChatMessageModel["salesforceSnapshot"];
 }) => {
@@ -188,7 +189,7 @@ export const OpenAIStream = (props: {
         finalized = true;
 
         const citationNormalizedContent = normalizeFinalCitations(
-          content || "",
+          props.finalizeContent ? props.finalizeContent(content || "") : content || "",
           pendingToolResults
         );
         let repairedContent = repairBrokenMarkdownUrls(

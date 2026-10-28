@@ -13,6 +13,7 @@ import type { SelectedSearchAccount } from "./skill-search-continuation";
 import { buildAccountCandidateQuery, companyForLookup, sameSalesforceId } from "./salesforce-search-query";
 import { formatAccountCandidates } from "./skill-account-candidates";
 import { resolveSkillSalesforceScope } from "./skill-salesforce-scope";
+import { SKILL_REPORT_OUTPUT_RULES, trackSkillReport, skillReportReasoningOptions } from "./skill-report-output";
 
 const sources: SearchSource[] = ["salesforce", "web", "documents"];
 const tools: ChatCompletionTool[] = sources.map(source => ({ type: "function", function: {
@@ -36,7 +37,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
   const abort = () => controller.abort();
   props.signal.addEventListener("abort", abort, { once: true });
   if (props.signal.aborted) controller.abort();
-  const timer = setTimeout(abort, SKILL_SEARCH_LIMITS.milliseconds);
+  let timer = setTimeout(abort, SKILL_SEARCH_LIMITS.searchMilliseconds);
   const searchDeadline = Date.now() + 80_000; // Reserve time for the final streamed answer.
   const cleanup = () => { clearTimeout(timer); props.signal.removeEventListener("abort", abort); };
   const requirements = skillSearchRequirements(props.skills, props.originalRequest ?? props.message);
@@ -65,6 +66,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     props.selectedAccount ? "利用者が直前の候補から選択した取引先（選択を再確認せず元の依頼を続行する）: " + JSON.stringify(props.selectedAccount) + "\n元の依頼: " + props.originalRequest : "",
     selectedRecordContext,
     SKILL_RESULT_PRESENTATION,
+    SKILL_REPORT_OUTPUT_RULES,
     "Skill要求の対応表。Slackは未対応、Canvasはチャット文書に置き換える。要求された検索を未実行のまま完了としない。年度売上など期間が必要な集計について会計期間が未指定なら質問する。担当者照会や現況検索は先に実行する: " + JSON.stringify(requirements),
     formatSkillContext(props.skills),
   ].join("\n") }, ...props.history.filter(item => item.role === "user" || (item.role === "assistant" && !item.tool_calls)).slice(-12), { role: "user", content: props.message }];
@@ -86,12 +88,15 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
       const progressOperations = props.skills.some(skill => /営業進捗/.test(skill.title))
         ? ["accounts","opportunities","activities"]
         : requirements.operations.filter(op => ["accounts","opportunities","activities"].includes(op));
-      for (const operation of progressOperations) {
+      const progressReads = progressOperations.flatMap<{operation:string;stage?:"進行中"|"成約"|"失注"}>(operation => operation === "opportunities"
+        ? [{operation, stage:"進行中" as const}, {operation, stage:"成約" as const}, {operation, stage:"失注" as const}]
+        : [{operation, stage:undefined}]);
+      for (const {operation, stage} of progressReads) {
         if (Date.now() >= searchDeadline || controller.signal.aborted) break;
         const query = ({accounts:"取引先一覧",opportunities:"商談一覧",activities:"活動一覧"} as Record<string,string>)[operation];
-        const result = await search.execute("salesforce",query,undefined,operation,{owner:namedOwner,target:operation,unsupportedConditions:[]});
+        const result = await search.execute("salesforce",query,undefined,operation,{owner:namedOwner,target:operation,stage,unsupportedConditions:[]},{progressPrefetch:true});
         coverage.push({operation,status:result.status,reason:result.reason,count:Array.isArray(result.data)?result.data.length:undefined,truncated:result.truncated});
-        messages.push({role:"system",content:"サーバーが本人権限で実行した担当者別の現況検索結果。取得済み対象の無条件再検索を繰り返さず、未指定期間の分析は未取得と説明する:\n"+JSON.stringify(result)});
+        messages.push({role:"system",content:"サーバーが本人権限で実行した担当者別の現況検索結果。取得済み対象の無条件再検索を繰り返さず、期間指定がなければ全期間の現況と説明する。進行中・成約・失注は別検索。合算は同一範囲の全検索成功時のみ。分類外の段階があり得るため合計を全商談件数とは呼ばない。段階="+(stage ?? "該当なし")+"\n"+JSON.stringify(result)});
         if (result.status === "needs_confirmation" || result.status === "denied") {
           cleanup();
           return {runner:undefined,directContent:(result.authoritativeText ?? result.message ?? "本人確認または候補の確認が必要です。")+"\n\n"+skillReferenceLabel(props.skills),citationResults:[...search.contextResults],salesforceSnapshot:search.salesforceSnapshot};
@@ -181,7 +186,12 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     }
     const queryCount = coverage.reduce((sum, item) => sum + (item.queryCount ?? 0), 0);
     messages.push({ role: "system", content: "検索フェーズは終了しました。取得結果と不足を基に最終回答してください。追加確認が必要なら質問してください。回答末尾: " + skillReferenceLabel(props.skills) + "\n要求と実行結果の対応: " + JSON.stringify(coverage) + (requirements.queryBudget && queryCount > requirements.queryBudget ? "\nSkill指定のクエリ回数上限には未対応です。安全な固定検索と集計のため今回は少なくとも" + queryCount + "回のSalesforceクエリを使用しました。この制限を末尾に明示し完全準拠とは説明しないこと。" : "") + "\n実行記録: " + JSON.stringify(search.trace) + "\n" + selectedRecordContext });
-    const runner = client.beta.chat.completions.stream({ model, messages, max_completion_tokens: 4000 }, { signal: controller.signal });
+    clearTimeout(timer);
+    timer=setTimeout(abort,SKILL_SEARCH_LIMITS.reportMilliseconds);
+    const runner = client.beta.chat.completions.stream({ model, messages, max_completion_tokens: 12000,
+      ...skillReportReasoningOptions(),
+    }, { signal: controller.signal });
+    trackSkillReport(runner, skillReferenceLabel(props.skills), props.chatThread.id.startsWith("teams-") ? "teams" : "web");
     runner.on("end", cleanup);
     runner.on("error", cleanup);
     runner.on("abort", cleanup);

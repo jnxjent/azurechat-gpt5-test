@@ -58,6 +58,7 @@ import { skillAuthoringInstructions } from "@/features/skills/skill-chat-authori
 import { formatSkillContext, skillReferenceLabel } from "@/features/skills/skill-rules";
 import { shouldRunSkillSearch } from "@/features/skills/execution/skill-search-policy";
 import { runSkillSearch } from "@/features/skills/execution/skill-search-runner";
+import { finalizeSkillReport } from "@/features/skills/execution/skill-report-output";
 import { isSkillSearchChoiceReply, readSelectedAccountSnapshot, resolveSkillSearchChoice, resolveSkillSearchPeriod } from "@/features/skills/execution/skill-search-continuation";
 import { readFiscalPeriod } from "@/features/skills/execution/skill-search-requirements";
 
@@ -161,7 +162,7 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
       return new Response(`event: finalContent\ndata: ${JSON.stringify({ type: "finalContent", response: directContent })}\n\n`, { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" } });
     }
     if (!runner) throw new Error("Skill search response missing");
-    return new Response(OpenAIStream({ runner, historySnapshot: mergeSkillSnapshots(historySource(history), salesforceSnapshot), initialToolResults: citationResults, chatThread: currentChatThread, memoryReference: skillReferenceLabel(selectedSkills) }), {
+    return new Response(OpenAIStream({ runner, finalizeContent: content => finalizeSkillReport(runner,content), historySnapshot: mergeSkillSnapshots(historySource(history), salesforceSnapshot), initialToolResults: citationResults, chatThread: currentChatThread, memoryReference: skillReferenceLabel(selectedSkills) }), {
       headers: { "Cache-Control": "no-cache", Connection: "keep-alive" },
     });
   }
