@@ -31,6 +31,8 @@ jobs:
           node scripts/test-skills.cjs
           node scripts/test-skill-search.cjs
           node scripts/test-skill-personal.cjs
+          node scripts/test-pptx-structure-edit.cjs
+          node scripts/test-pptx-structure-image-boundary.cjs
           node scripts/test-skill-report-delivery.cjs
           node scripts/test-skill-progress-evidence.cjs
           node scripts/test-skill-suggestions.cjs
@@ -97,6 +99,8 @@ jobs:
             mkdir -p ./site-deploy/src/scripts
             cp -f ./src/scripts/edit_pptx.py ./site-deploy/src/scripts/edit_pptx.py
           fi
+          cp -f ./src/scripts/pptx_structure_edit.py ./site-deploy/src/scripts/pptx_structure_edit.py
+          test -s ./site-deploy/src/scripts/pptx_structure_edit.py
 
           # pdf.worker.js を明示的に同梱（standalone では自動コピーされないため）
           WORKER_SRC="./src/node_modules/pdfjs-dist/legacy/build/pdf.worker.js"

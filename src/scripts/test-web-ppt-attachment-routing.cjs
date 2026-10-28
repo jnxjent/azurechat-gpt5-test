@@ -40,6 +40,7 @@ function load(relative) {
     if (name === '@/features/skills/execution/skill-personal-access') return load('features/skills/execution/skill-personal-access.ts');
     if (name === './image/image-intent') return load('features/chat-page/chat-services/chat-api/image/image-intent.ts');
     if (name === '@/features/pptx/output-intent') return load('features/pptx/output-intent.ts');
+    if (name === '@/features/pptx/structure-edit-intent') return load('features/pptx/structure-edit-intent.ts');
     if (name === '@/features/pptx/palette') return { resolvePptxPaletteInstruction: () => null };
     if (name.startsWith('@/') || name.startsWith('../') || name.startsWith('./')) return services;
     return original(name);

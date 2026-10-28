@@ -57,6 +57,7 @@ import { prepareSkillsForChat } from "@/features/skills/skill-chat-handler";
 import { skillAuthoringInstructions } from "@/features/skills/skill-chat-authoring";
 import { formatSkillContext, skillReferenceLabel } from "@/features/skills/skill-rules";
 import { shouldRunSkillSearch } from "@/features/skills/execution/skill-search-policy";
+import { isPptxStructureEditRequest } from "@/features/pptx/structure-edit-intent";
 import { runSkillSearch } from "@/features/skills/execution/skill-search-runner";
 import { finalizeSkillReport } from "@/features/skills/execution/skill-report-output";
 import { isSkillSearchChoiceReply, readSelectedAccountSnapshot, resolveSkillSearchChoice, resolveSkillSearchPeriod } from "@/features/skills/execution/skill-search-continuation";
@@ -234,9 +235,10 @@ export const ChatAPIEntry = async (props: UserPrompt, signal: AbortSignal) => {
   const pendingPptxEdit = mayBePendingPptxAccentReply
     ? await LoadPendingPptxEdit(currentChatThread.id).catch(() => null)
     : null;
+  const pptxStructureEditRequest = !newPptRequest && isPptxStructureEditRequest(props.message);
   const requiredImageToolName = pendingPptxEdit
     ? "edit_pptx"
-    : pptxAssetPlacementRequest
+    : pptxAssetPlacementRequest || pptxStructureEditRequest
     ? "edit_pptx"
     : explicitPptRequest ? undefined : resolveRequiredImageToolName(
         props.message,
