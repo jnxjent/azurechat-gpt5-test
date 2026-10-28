@@ -37,6 +37,7 @@ jobs:
           node scripts/test-skill-generator.cjs
           node scripts/test-skill-chat-authoring.cjs
           node scripts/test-fiscal-period.cjs
+          node scripts/test-skill-v2-period.cjs
           node scripts/test-salesforce-routing.cjs
           node scripts/test-canvas.cjs
           node scripts/test-salesforce-clarification.cjs

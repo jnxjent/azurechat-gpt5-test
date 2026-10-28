@@ -297,8 +297,9 @@ async function createTeamsRuntime(): Promise<TeamsRuntime> {
             await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});
             return;
           }
-        }else if(/Skill|スキル/i.test(messageText)) {
-          await send("スキルは本人確認ができるBOTとの個人チャットで使ってください。");
+        }else if(/Skill|スキル|営業進捗|営業状況|進み具合|成約.*失注|予実|見積依頼|訪問準備|営業活動.*(?:分析|報告)|営業所.*分析|社内相談|得意分野|原価予測|単価設定|商談促進|契約.*チェック|値上げ提案|AI営業部長|週ミーティング|社内ルール博士|社内システム博士/i.test(messageText)) {
+          console.info("[teams-skill] route",{route:"identity_required",skipAuth:process.env.TEAMS_SKIP_AUTH?.trim().toLowerCase()==="true"});
+          await send("この依頼のスキル検索に必要なTeamsの本人確認ができません。認証付きのBOTとの個人チャットで実行してください。認証を省略したPlaygroundでは実Salesforce検索を実行しません。営業データは未取得です。");
           await recordCompletedTeamsTurn({conversationId,activityId,teamsUserId});return;
         }
       }

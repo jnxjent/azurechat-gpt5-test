@@ -1,6 +1,7 @@
-import { isPersonalSkillUser, skillPersonalHeaders, mergeSkillSnapshots, type SkillSnapshot } from "./skill-personal-access";
+import { isPersonalSkillUser, skillPersonalHeaders, mergeSkillSnapshots, SkillPersonalConnectionError, type SkillSnapshot } from "./skill-personal-access";
 import { personalSalesforceBase, assertPersonalSalesforceResponse, personalSalesforceForEmail } from "@/features/common/services/salesforce-personal";
 import "server-only";
+import { buildTypedSkillReadV2, SkillReadV2UnsupportedError } from "./skill-read-v2";
 import { salesforceReadText, salesforceReadInstruction, salesforceReadMetadata } from "@/features/common/services/salesforce-read-result";
 import { isSalesforceAllowedEmail } from "@/features/common/services/salesforce-access";
 import { buildSalesforceGatewayQuery } from "@/features/common/services/salesforce-routing";
@@ -35,7 +36,7 @@ function skillOwnerCandidates(source: SearchSource, body: any, httpStatus: numbe
   const clean = (value: string) => value.replace(/[\r\n\\`*_[\]<>|]/g, " ").slice(0,120);
   const candidates = rows.flatMap((row: any) => {
     const name = row?.name ?? row?.Name;
-    const department = row?.department ?? row?.Department;
+    const department = row?.office ?? row?.Office__c ?? row?.department ?? row?.Department;
     return typeof name === "string" && name.trim() ? [`- ${clean(name)}${typeof department === "string" && department ? `（${clean(department)}）` : ""}`] : [];
   }).slice(0,10);
   if (!candidates.length) return;
@@ -72,7 +73,17 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         });
       }
     } catch (error) {
+      if (error instanceof SkillReadV2UnsupportedError) {
+        console.info("[skill-search] v2-rejected",{reason:error.diagnosticCode});
+        result = {source,status:"error",reason:error.reason,planVersion:"SF_READ_PLAN_V2",message:error.message};
+      } else if (error instanceof SkillPersonalConnectionError) {
+        result = {source,status:"denied",reason:error.reason,message:error.reason === "identity_unavailable"
+          ? "Salesforce本人接続に必要なMicrosoftの本人情報が、現在のログイン状態にありません。一度サインアウトし、開発用ログインではなくMicrosoftアカウントでログインし直してください。接続前に中止したためデータの有無は判断できません。"
+          : error.reason === "identity_mismatch" ? "ログイン中のMicrosoft本人情報が一致しないため、Salesforce検索を中止しました。サインアウトしてMicrosoftアカウントでログインし直してください。"
+          : "Salesforce本人接続の設定を確認できないため検索を中止しました。共有接続へは切り替えません。"};
+      } else {
       result = error instanceof SkillQueryContextError ? { source, status: "error", reason: error.reason, message: error.message } : { source, status: "error", reason: props.signal.aborted ? "cancelled" : error instanceof TypeError ? "invalid_input_or_connection" : error instanceof Error && error.message === "timeout" ? "timeout" : "connection_failed", message: "検索を完了できませんでした。接続失敗・タイムアウト等のため、データの有無は判断できません。" };
+      }
     }
     result = boundSearchResult(result);
     if (source === "documents" && Array.isArray(result.data)) {
@@ -80,7 +91,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       if (markup) citationResults.push(markup);
     }
     trace.push({ source, status: result.status, ...(result.truncated ? { truncated: true } : {}) });
-    console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? personal ? "personal" : process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
+    console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? personal ? "personal" : process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, returnedObject:result.returnedObject ?? null, requestedTarget:result.requestedTarget ?? null, planVersion:result.planVersion ?? null, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
     return result;
   }
   async function search(source: SearchSource, query: string, suppliedCompany?: unknown, suppliedOperation?: unknown, suppliedScope?: unknown): Promise<SkillSearchResult> {
@@ -114,7 +125,9 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       // account's sales and unfiltered opportunities/activities; they cannot retain
       // arbitrary owner, period or stage conditions.
       const extraConditions = Boolean(scope.owner || scope.period || /失注|成約|進行中|以降|以前|StageName|CloseDate/.test(query + props.userMessage));
-      const typedPersonal = personal && confirmedAccount && !countQuery && (financial || (["opportunities", "activities"].includes(operation) && !extraConditions));
+      const typedV2 = personal && !countQuery ? buildTypedSkillReadV2(query, props.userMessage, scope, operation, props.selectedAccount?.id) : undefined;
+      if (personal && !countQuery && !financial && process.env.SF_SKILL_READ_V2_ENABLED === "true" && !typedV2) throw new SkillReadV2UnsupportedError();
+      const typedPersonal = Boolean(typedV2) || personal && confirmedAccount && !countQuery && (financial || (["opportunities", "activities"].includes(operation) && !extraConditions));
       const typedBase = personal ? typedPersonal ? personalSalesforceBase() : undefined : countQuery ? undefined : process.env.SF_SKILL_READ_BASE_URL;
       if (financial && !typedBase) return { source, status: "unavailable", reason: "typed_sales_required", message: "売上集計には確定した取引先と構造化読み取りGatewayが必要です。対象の取引先を指定してください。自然文検索で金額を代用しません。" };
       const base = personal ? personalSalesforceBase() : typedBase || process.env.SF_GATEWAY_BASE_URL;
@@ -144,7 +157,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
           const typedOperation = financial ? "sales" : company && !props.selectedAccount ? "accounts" : operation;
           const fiscalPeriod = typeof scope.period === "string" ? readFiscalPeriod(scope.period) ?? props.fiscalPeriod : scope.period ? { fiscalStart: scope.period.start, fiscalEnd: scope.period.end } : props.fiscalPeriod;
           if (typedOperation === "sales" && scope.period && !fiscalPeriod) throw new TypeError("売上の集計期間を確認してください。");
-          const body = JSON.stringify({ operation: typedOperation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(typedOperation === "sales" ? fiscalPeriod : {}) });
+          const body = JSON.stringify(typedV2 ?? { operation: typedOperation, ...(company ? { company } : {}), ...(props.selectedAccount ? { accountId: props.selectedAccount.id } : {}), ...(typedOperation === "sales" ? fiscalPeriod : {}) });
           const signed = personal ? await skillPersonalHeaders(target, props.email, gatewayThread, "POST", body) : {};
           const response = await fetch(target, { method: "POST", signal: props.signal, cache: "no-store", redirect: "error", headers: { ...signed, "Content-Type": "application/json", "X-User-Email": props.email, "X-Chat-Thread-Id": gatewayThread, ...(!personal ? {"X-Skill-Read-Key": process.env.SF_SKILL_READ_KEY!} : {}) }, body });
           return verifiedResponse(response, signed);
@@ -163,6 +176,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         if (accountSelection) return accountSelection;
         const ownerChoice = skillOwnerCandidates(source, issue, response.status);
         if (ownerChoice) return ownerChoice;
+        if (issue?.error_kind === "owner_not_found" || issue?.error === "owner_not_found") return {source,status:"error",reason:"owner_not_found",message:"Salesforce上で該当する担当者が見つかりません。商談や活動が0件という意味ではありません。別人や本人の結果で代用せず、担当者名を確認してください。"};
         const contextMissing = skillRecoverableReadError(source, issue, response.status);
         if (contextMissing) return contextMissing;
         const explanation = salesforceReadText(issue);
@@ -242,7 +256,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       if (personal && !props.selectedAccount && lookup && body.object === "Account" && !body.truncated && body.items.length === 1 && /^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(body.items[0].Id)) {
         props.selectedAccount = {id:body.items[0].Id,name:body.items[0].Name};
       }
-      return { source, status: body.items.length ? "ok" : "empty", reason: excludedCount ? "partial_verified_results" : "query_completed", queryCount: typeof body.query_count === "number" ? body.query_count : undefined, excludedCount, data: body.items, ...(body.truncated ? { truncated: true } : {}), message: JSON.stringify({ ...salesforceReadMetadata(body), instruction: salesforceReadInstruction, object: body.object ?? "不明", contract: body.contract, notices: body.notices, appliedFilters: body.applied_filters, order: body.order, limits: body.limits, displayHint: body.display_hint ?? "不明", resolvedAccountName: body.resolved_account_name ?? null, returnedCount: body.items.length, totalCount: body.total_count ?? null, excludedCount, guidance: "一致を検証できない行を除外している場合は除外件数を明示する。OwnerNameは社内の担当営業。上限取得や除外後の一部を全件集計に使わない。指定期間等が実際の適用条件にない場合はその制限も明示する。" }) };
+      return { source, returnedObject:body.object, requestedTarget:operation, planVersion:body.plan_version, status: body.items.length ? "ok" : "empty", reason: excludedCount ? "partial_verified_results" : "query_completed", queryCount: typeof body.query_count === "number" ? body.query_count : undefined, excludedCount, data: body.items, ...(body.truncated ? { truncated: true } : {}), message: JSON.stringify({ ...salesforceReadMetadata(body), instruction: salesforceReadInstruction, object: body.object ?? "不明", contract: body.contract, notices: body.notices, appliedFilters: body.applied_filters, order: body.order, limits: body.limits, displayHint: body.display_hint ?? "不明", resolvedAccountName: body.resolved_account_name ?? null, returnedCount: body.items.length, totalCount: body.total_count ?? null, excludedCount, guidance: "一致を検証できない行を除外している場合は除外件数を明示する。OwnerNameは社内の担当営業。上限取得や除外後の一部を全件集計に使わない。指定期間等が実際の適用条件にない場合はその制限も明示する。" }) };
     }
     if (source === "web") {
       if (!isTeamsBraveSearchConfigured()) return { source, status: "unavailable", message: "Web検索未設定です。" };

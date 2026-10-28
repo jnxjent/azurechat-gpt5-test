@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript');
-const handlers={},skillCalls=[];let pendingOffice,scheduling,normalCalls=0;
+const handlers={},skillCalls=[];let pendingOffice,scheduling,normalCalls=0,identityFails=false;
 const actor={email:'owner@example.test',salesforcePrincipal:'tenant:owner'};
 Object.assign(process.env,{TEAMS_ENABLED:'true',TEAMS_BOT_ID:'bot',TEAMS_BOT_SECRET:'test-only',TEAMS_TENANT_ID:'tenant',TEAMS_SKIP_AUTH:'false',SKILL_SEARCH_ENABLED:'true',SF_PERSONAL_MODE:'false'});
 const stubs={
@@ -7,7 +7,7 @@ const stubs={
  '@microsoft/teams.apps':{App:class{on(name,handler){handlers[name]=handler;}async initialize(){}}},
  './next-http-adapter':{NextHttpAdapter:class{}},
  './teams-skill-service':{skillSubmission:()=>undefined,handleTeamsSkill:async props=>{skillCalls.push(props.message);return {card:{type:'AdaptiveCard',body:[],actions:[]}};}},
- './teams-canvas-service':{isTeamsCanvasRequest:()=>false,resolveTeamsSkillActor:async activity=>{assert.equal(activity.conversation.conversationType,'personal');return actor;}},
+ './teams-canvas-service':{isTeamsCanvasRequest:()=>false,resolveTeamsSkillActor:async activity=>{if(identityFails)throw Error('identity unavailable');assert.equal(activity.conversation.conversationType,'personal');return actor;}},
  './teams-file-service':{receiveTeamsFiles:async()=>[],readLatestTeamsFiles:async()=>[],buildTeamsTextAttachmentContext:()=>''},
  './teams-file-policy':{stripTeamsAttachmentMarkup:text=>text,referencesTeamsUpload:()=>false},
  './teams-instant-reply':{resolveTeamsInstantReply:()=>undefined},
@@ -46,5 +46,9 @@ async function message(text,type='personal'){
  await message('黄さんの営業進捗をレポートにまとめて','groupChat');assert.equal(skillCalls.length,2);assert.equal(normalCalls,1);
  process.env.SKILL_SEARCH_ENABLED='false';await message('黄さんの営業進捗をレポートにまとめて');assert.equal(skillCalls.length,2);assert.equal(normalCalls,2);
  process.env.SKILL_SEARCH_ENABLED='true';await message('普通の長い質問'.repeat(500));assert.equal(skillCalls.length,2);assert.equal(normalCalls,3,'long ordinary chat must not get the Skill input-length error');
+ identityFails=true;process.env.TEAMS_SKIP_AUTH='true';
+ sent=await message('黄さんの営業進捗をレポートにまとめて');
+ assert.ok(sent[0].includes('本人確認'));assert.equal(normalCalls,3);assert.equal(skillCalls.length,2,'Unauthenticated sales report must not search SF or internal documents');
+ await message('こんにちは、今日もよろしく');assert.equal(normalCalls,4,'Ordinary conversation remains available');
  console.log('PASS actual Teams message route: general Skill candidates, Office/scheduling priority, personal-chat scope, feature flag and long-chat fallback');
 })().catch(error=>{console.error(error);process.exitCode=1;});

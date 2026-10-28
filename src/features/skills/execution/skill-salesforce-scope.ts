@@ -3,6 +3,8 @@ import { companyForLookup } from "./salesforce-search-query";
 export const SKILL_SF_QUERY_LIMIT = 500;
 export type SkillSalesforceScope = {
   company?: string; owner?: string;
+  stage?: "進行中" | "成約" | "失注" | "全段階";
+  unsupportedConditions?: string[];
   period?: string | { start: string; end: string };
   target?: "accounts" | "opportunities" | "activities" | "contacts" | "sales" | "count";
 };
@@ -27,7 +29,9 @@ export function readSkillSalesforceScope(value: unknown): SkillSalesforceScope {
     period = { start, end };
   }
   if (v.target !== undefined && !targets.includes(v.target as typeof targets[number])) throw new TypeError("Invalid Salesforce target");
-  return { company, owner, period, target: v.target as SkillSalesforceScope["target"] };
+  if (v.stage !== undefined && !["進行中","成約","失注","全段階"].includes(String(v.stage))) throw new TypeError("Invalid Salesforce stage");
+  if (v.unsupportedConditions !== undefined && (!Array.isArray(v.unsupportedConditions) || v.unsupportedConditions.length > 20 || v.unsupportedConditions.some(item => typeof item !== "string" || !item.trim() || item.length > 200))) throw new TypeError("Invalid Salesforce conditions");
+  return { company, owner, period, stage: v.stage as SkillSalesforceScope["stage"], unsupportedConditions: v.unsupportedConditions as string[] | undefined, target: v.target as SkillSalesforceScope["target"] };
 }
 export function resolveSkillSalesforceScope(value: unknown, request: string, legacyCompany?: unknown): SkillSalesforceScope {
   const scope = readSkillSalesforceScope(value);
