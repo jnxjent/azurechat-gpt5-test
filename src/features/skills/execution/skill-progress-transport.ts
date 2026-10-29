@@ -72,18 +72,18 @@ function action(row: Record<string, any>): string {
 }
 
 /** One source of truth for the ranked sections, shared by Web persistence and Teams. */
-export function progressRankingMarkdown(result: SkillSearchResult): string {
+export function progressRankingMarkdown(result: SkillSearchResult, displayLimit = 20): string {
   if (result.status !== "ok" || result.returnedObject !== "Opportunity" || !Array.isArray(result.data) || result.modelVisibleCount !== result.data.length) return "";
   const rows = result.data.filter(row => row && Number.isInteger(row.progressRank) && row.progressEvidence);
   if (!rows.length) return "";
   const top = rows.slice(0, 3).map(row => `${row.progressRank}. ${recordLink(row)}：${reason(row)}。提案：${action(row)}。`).join("\n");
-  const table = rows.slice(0, 20).map(row => `| ${row.progressRank} | ${cell(row.AccountName ?? row.Account?.Name)} | ${recordLink(row)} | ${cell(row.StageName)} | ${typeof row.Amount === "number" && Number.isFinite(row.Amount) ? row.Amount.toLocaleString("ja-JP") : "未取得"} | ${cell(row.CloseDate)} | ${reason(row)} |`).join("\n");
+  const table = rows.slice(0, displayLimit).map(row => `| ${row.progressRank} | ${cell(row.AccountName ?? row.Account?.Name)} | ${recordLink(row)} | ${cell(row.StageName)} | ${typeof row.Amount === "number" && Number.isFinite(row.Amount) ? row.Amount.toLocaleString("ja-JP") : "未取得"} | ${cell(row.CloseDate)} | ${reason(row)} |`).join("\n");
   const followups = rows.slice(0, 5).map(row => `| ${row.progressRank} | ${recordLink(row)} | ${action(row)} |`).join("\n");
   return ["## 営業進捗の確認順（サーバー集計）",
     `この検索の取得${result.fetchedCount ?? result.data.length}件、AI入力${result.modelVisibleCount}件。確認順位は取得明細内の暫定基準です。${result.truncated ? "上流の取得上限があるため、全商談の順位ではありません。" : ""}`,
     ...(result.amountSummary ? [`取得したAmount値の合計：${result.amountSummary.valueSum ?? "未取得"}（金額あり${result.amountSummary.valuedRecords}件、欠損${result.amountSummary.missingRecords}件、不正${result.amountSummary.invalidRecords}件）。通貨・税区分は未確認。売上実績・予算の合計ではありません。`] : []),
     "### 最優先3件", top,
-    `### 進行中商談一覧（${Math.min(rows.length, 20)}件掲載／分析対象${rows.length}件）`,
+    `### 進行中商談一覧（${Math.min(rows.length, displayLimit)}件掲載／分析対象${rows.length}件）`,
     "| 確認順位 | 取引先 | 商談 | 段階 | 商談金額（取得値） | 予定日 | 確認理由 |",
     "| --- | --- | --- | --- | ---: | --- | --- |", table,
     "### 優先フォローアップ（提案）", "| 確認順位 | 商談 | 次の行動 |", "| --- | --- | --- |", followups,

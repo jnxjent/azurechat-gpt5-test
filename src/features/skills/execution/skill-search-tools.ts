@@ -56,7 +56,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
   const citationResults: string[] = [];
   const contextResults: string[] = [];
   const trace: Array<{ source: SearchSource; status: string; truncated?: boolean }> = [];
-  async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown, scope?: unknown, presentation?: {progressPrefetch:true}): Promise<SkillSearchResult> {
+  async function execute(source: SearchSource, input: unknown, companyName?: unknown, operation?: unknown, scope?: unknown, presentation?: {progressPrefetch:true; analysisRequest?:string}): Promise<SkillSearchResult> {
     const started = Date.now();
     let result: SkillSearchResult;
     try {
@@ -71,7 +71,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
           const aborted = () => { clearTimeout(timeout); reject(new Error("aborted")); };
           const timeout = setTimeout(() => { props.signal.removeEventListener("abort", aborted); reject(new Error("timeout")); }, 25_000);
           props.signal.addEventListener("abort", aborted, { once: true });
-          search(source, query, companyName, operation, scope).then(resolve, reject).finally(() => { clearTimeout(timeout); props.signal.removeEventListener("abort", aborted); });
+          search(source, query, companyName, operation, scope, presentation?.analysisRequest).then(resolve, reject).finally(() => { clearTimeout(timeout); props.signal.removeEventListener("abort", aborted); });
         });
       }
     } catch (error) {
@@ -98,10 +98,11 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
     console.info("[skill-search] result", { source, gateway: result.reason === "selected_account_snapshot" ? "snapshot" : source === "salesforce" ? personal ? "personal" : process.env.SF_SKILL_READ_BASE_URL ? "typed_local" : "legacy_nl" : source, status: result.status, reason: result.reason ?? result.status, returnedObject:result.returnedObject ?? null, requestedTarget:result.requestedTarget ?? null, planVersion:result.planVersion ?? null, httpStatus: result.httpStatus ?? null, elapsedMs: Date.now() - started, fetchedCount:result.fetchedCount ?? null, modelVisibleCount:result.modelVisibleCount ?? null, returnedCount: Array.isArray(result.data) ? result.data.length : null, excludedCount: result.excludedCount ?? 0, truncated: Boolean(result.truncated) });
     return result;
   }
-  async function search(source: SearchSource, query: string, suppliedCompany?: unknown, suppliedOperation?: unknown, suppliedScope?: unknown): Promise<SkillSearchResult> {
+  async function search(source: SearchSource, query: string, suppliedCompany?: unknown, suppliedOperation?: unknown, suppliedScope?: unknown, analysisRequest?:string): Promise<SkillSearchResult> {
     if (source === "salesforce") {
       if (!isSalesforceAllowedEmail(props.email)) return { source, status: "denied", reason: "sf_whitelist_denied", message: "Salesforce参照権限がありません。" };
-      const scope = resolveSkillSalesforceScope(suppliedScope, props.userMessage, suppliedCompany);
+      const requestText=analysisRequest??props.userMessage;
+      const scope = resolveSkillSalesforceScope(suppliedScope, requestText, suppliedCompany);
       const accountChoice = (body: any): SkillSearchResult | undefined => {
         if (!Array.isArray(body?.account_candidates) || !body.account_candidates.length) return;
         const records = body.account_candidates.flatMap((item: any) => {
@@ -113,7 +114,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
         contextResults.push(JSON.stringify({integration:"skill_search_account_candidates",observedAt:new Date().toISOString(),records}));
         return {source,status:"needs_confirmation",data:records,truncated:Boolean(body.candidates_truncated) || body.account_candidates.length>50,message:JSON.stringify(salesforceReadMetadata(body))+"\n候補を利用者に確認してください。候補は0件ではありません。"};
       };
-      scope.period ??= props.fiscalPeriod ? { start: props.fiscalPeriod.fiscalStart, end: props.fiscalPeriod.fiscalEnd } : undefined;
+      scope.period ??= !analysisRequest && props.fiscalPeriod ? { start: props.fiscalPeriod.fiscalStart, end: props.fiscalPeriod.fiscalEnd } : undefined;
       const operation = scope.target ?? (["accounts", "opportunities", "activities", "sales"].includes(String(suppliedOperation)) ? String(suppliedOperation) : /Sales__c|売上|受注合計/i.test(query) ? "sales" : /商談|Opportunity/i.test(query) ? "opportunities" : /活動履歴|活動一覧|Task|Event/i.test(query) ? "activities" : "accounts");
       if (!personal && props.selectedAccount && sameSalesforceId(props.selectedAccountRecord?.Id, props.selectedAccount.id) && (!suppliedOperation || suppliedOperation === "accounts") && isCompanyLookup(query)) {
         return { source, status: "ok", reason: "selected_account_snapshot", data: [props.selectedAccountRecord], message: "利用者が直前の検索結果から選んだAccountの取得済みデータです（候補提示時点のスナップショット）。同名の別Accountを混ぜず、このレコードの値を使用してください。" };
@@ -128,8 +129,8 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       // Personal search defaults to NL. Fixed queries are only for a confirmed
       // account's sales and unfiltered opportunities/activities; they cannot retain
       // arbitrary owner, period or stage conditions.
-      const extraConditions = Boolean(scope.owner || scope.period || /失注|成約|進行中|以降|以前|StageName|CloseDate/.test(query + props.userMessage));
-      const typedV2 = personal && !countQuery ? buildTypedSkillReadV2(query, props.userMessage, scope, operation, props.selectedAccount?.id) : undefined;
+      const extraConditions = Boolean(scope.owner || scope.period || /失注|成約|進行中|以降|以前|StageName|CloseDate/.test(query + requestText));
+      const typedV2 = personal && !countQuery ? buildTypedSkillReadV2(query, requestText, scope, operation, props.selectedAccount?.id) : undefined;
       if (personal && !countQuery && !financial && process.env.SF_SKILL_READ_V2_ENABLED === "true" && !typedV2) throw new SkillReadV2UnsupportedError();
       const typedPersonal = Boolean(typedV2) || personal && confirmedAccount && !countQuery && (financial || (["opportunities", "activities"].includes(operation) && !extraConditions));
       const typedBase = personal ? typedPersonal ? personalSalesforceBase() : undefined : countQuery ? undefined : process.env.SF_SKILL_READ_BASE_URL;

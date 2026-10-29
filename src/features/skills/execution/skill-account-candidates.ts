@@ -7,10 +7,15 @@ export function formatAccountCandidates(result: SkillSearchResult, reference: st
   if (result.status !== "needs_confirmation" || !Array.isArray(result.data) || !result.data.length) throw new Error("Account candidates missing");
   const rows = result.data.map((row, index) => {
     const item = row as Record<string, unknown>;
-    const url = new URL(String(item.lightning_url));
-    if (url.protocol !== "https:" || !/\.(?:lightning\.force\.com|salesforce\.com)$/.test(url.hostname) || url.pathname !== `/lightning/r/Account/${item.Id}/view` || !/^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(String(item.Id))) throw new Error("Invalid Account candidate link");
+    if (!/^001[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(String(item.Id))) throw new Error("Invalid Account candidate link");
+    let name=safeText(item.Name);
+    if(item.lightning_url != null && item.lightning_url!=="") {
+      const url = new URL(String(item.lightning_url));
+      if (url.protocol !== "https:" || !/\.(?:lightning\.force\.com|salesforce\.com)$/.test(url.hostname) || url.pathname !== `/lightning/r/Account/${item.Id}/view`) throw new Error("Invalid Account candidate link");
+      name=`[${name}](${url.href})`;
+    }
     const address = [item.BillingPostalCode ? `〒${item.BillingPostalCode} ` : "", item.BillingCountry, item.BillingState, item.BillingCity, item.BillingStreet].filter(Boolean).join("");
-    return `| ${index + 1} | [${safeText(item.Name)}](${url.href}) | ${safeText(address || "[未設定]")} | ${safeText(item.OwnerName || "[未設定]")} | ${item.Id} |`;
+    return `| ${index + 1} | ${name} | ${safeText(address || "[未取得]")} | ${safeText(item.OwnerName || "[未取得]")} | ${item.Id} |`;
   });
   return "対象のSalesforce取引先が複数あります。取引先・請求先住所・社内担当営業を確認し、対象を1つ選択してください。\n\n"
     + "| 番号 | 取引先 | 請求先住所 | 社内担当営業 | Account ID |\n|---:|---|---|---|---|\n"

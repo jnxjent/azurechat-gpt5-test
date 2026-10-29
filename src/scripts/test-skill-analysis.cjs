@@ -1,0 +1,40 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript');
+const cache=new Map();function load(name){const file=path.resolve(__dirname,'..',name);if(cache.has(file))return cache.get(file);const m={exports:{}};cache.set(file,m.exports);
+ new Function('require','module','exports',ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(id=>id.startsWith('@/')?load(id.slice(2)+'.ts'):id.startsWith('.')?load(path.resolve(path.dirname(file),id+'.ts')):require(id),m,m.exports);return m.exports;}
+const {SALES_ANALYSIS_PROFILES,salesAnalysisTemplate,salesAnalysisProfile}=load('features/skills/sales-analysis-skills.ts');
+const {planAnalysisSkill,analysisPeriod}=load('features/skills/execution/skill-analysis-plan.ts');
+const {summarizeAnalysisRead,analysisSummaryMarkdown}=load('features/skills/execution/skill-analysis-summary.ts');
+const {progressReportEvidence}=load('features/skills/execution/skill-progress-evidence.ts');
+const {validateSkill}=load('features/skills/skill-rules.ts');
+const today='2026-10-29';
+assert.equal(salesAnalysisProfile([{title:'営業進捗管理',content:'Salesforceで今月の進行中だけを検索する'}]),undefined,'Do not take over a custom Skill based only on its title');
+for(const profile of SALES_ANALYSIS_PROFILES){
+ const skill=validateSkill(salesAnalysisTemplate(profile.key));
+ const plan=planAnalysisSkill([skill],profile.question,today);
+ assert.ok(plan&&!plan.confirmation,`${profile.key}: ${plan?.confirmation}`);
+ assert.ok(plan.reads.length>0&&plan.reads.length<=6);
+ console.log('PASS representative',profile.title,plan.reads.length,'reads');
+}
+assert.deepEqual(analysisPeriod('今週',today),{start:'2026-10-26',endExclusive:'2026-11-02',expression:'2026-10-26～2026-11-01'});
+assert.equal(analysisPeriod('先週','2026-01-01').start,'2025-12-22');
+assert.equal(analysisPeriod('今月','2026-12-31').endExclusive,'2027-01-01');
+assert.equal(analysisPeriod('2024年2月',today).endExclusive,'2024-03-01');
+for(const text of ['2026年2月30日から2026年3月1日','2026年13月','2026年10月1日','今月と先月の比較','2026年10月と今月','今期と今月','最近'])assert.throws(()=>analysisPeriod(text,today),text);
+const {formatAccountCandidates}=load('features/skills/execution/skill-account-candidates.ts');
+assert.ok(formatAccountCandidates({status:'needs_confirmation',data:[{Id:'001000000000001AAA',Name:'確認会社'}]},'Skill').includes('確認会社'));
+assert.throws(()=>formatAccountCandidates({status:'needs_confirmation',data:[{Id:'001000000000001AAA',Name:'確認会社',lightning_url:'javascript:bad'}]},'Skill'));
+for(const key of ['outcomes','activity','weekly','monthly'])assert.ok(planAnalysisSkill([salesAnalysisTemplate(key)],'黄さんの商談と活動をまとめてください',today).confirmation);
+for(const text of ['浜松営業所全体の今月の分析','黄さんの今月の売上分析','黄さんの今月の100万円以上の商談','黄さんの部下の今月の活動'])assert.ok(planAnalysisSkill([salesAnalysisTemplate('director')],text,today).confirmation,text);
+assert.ok(planAnalysisSkill([salesAnalysisTemplate('office')],'黄さんの営業所管理をまとめてください',today).confirmation);
+const own=planAnalysisSkill([salesAnalysisTemplate('director')],'私の商談と活動をまとめてください',today);assert.equal(own.reads[0].owner,'本人');
+assert.equal(planAnalysisSkill([salesAnalysisTemplate('progress')],'甲斐 太郎さんの営業進捗をまとめてください',today).reads[0].owner,'甲斐 太郎','Retain full names instead of resolving only a given name');
+assert.equal(planAnalysisSkill([salesAnalysisTemplate('office')],'対象担当者：黄、甲斐。営業所管理の形式で商談と活動をまとめてください',today).reads.length,4);
+const data=[{Id:'a',StageName:'作業完了',Amount:0.1},{Id:'b',StageName:'失注',Amount:0.2,Loss_Reason__c:'価格'},{Id:'c',StageName:'見積提示',Amount:null},{Id:'d',StageName:'その他',Amount:10}];
+const summary=summarizeAnalysisRead({source:'salesforce',status:'ok',returnedObject:'Opportunity',data,totalCount:4,modelVisibleCount:4});
+assert.equal(summary.metrics.amount.valueSum,'10.3');assert.equal(summary.metrics.won,1);assert.equal(summary.metrics.lost,1);assert.equal(summary.metrics.unclassified,1);assert.equal(summary.metrics.closedWonShare,0.5);assert.equal(summary.complete,true);
+assert.equal(summarizeAnalysisRead({source:'salesforce',status:'error',data:[]}).metrics,null);
+assert.equal(summarizeAnalysisRead({source:'salesforce',status:'empty',returnedObject:'Opportunity',data:[],totalCount:0}).metrics.closedWonShare,null);
+assert.equal(summarizeAnalysisRead({source:'salesforce',status:'ok',returnedObject:'Opportunity',data,totalCount:10,truncated:true}).complete,false);
+const plan=planAnalysisSkill([salesAnalysisTemplate('office')],SALES_ANALYSIS_PROFILES.find(p=>p.key==='office').question,today);
+const report=analysisSummaryMarkdown(plan,[{read:plan.reads[0],result:{source:'salesforce',status:'error',reason:'timeout'}}]);assert.ok(report.includes('0件ではありません'));assert.ok(report.includes('全所属者を確認した集計ではありません'));
+console.log('PASS eight profiles, period boundaries, scope refusal, provisional classes, decimal sums and missing data');

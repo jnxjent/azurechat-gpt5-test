@@ -101,3 +101,4 @@ assert.equal(lost.data[0].Loss_Reason__c,'顧客都合');
 assert.equal(lost.data[0].progressRank,undefined,'Do not assign open-opportunity priorities to lost records');
 assert.equal(progressReportEvidence({...tasks,status:'error'},'2026-10-29').activitySummary,undefined,'Errors are not empty successful reads');
 require('./test-skill-progress-transport.cjs');
+require('./test-skill-analysis.cjs');

@@ -4,6 +4,7 @@ import { importSkill, skillBytes, SKILL_CONTENT_BYTES } from "./skill-rules";
 import type { SharedSkill, SkillInput, UserSkill } from "./skill-rules";
 import { SkillGenerator } from "./skill-generator";
 import { notifySkillCatalogChanged } from "./skill-suggestions";
+import { SALES_ANALYSIS_PROFILES, salesAnalysisTemplate } from "./sales-analysis-skills";
 
 const blank: SkillInput = {title:"",description:"",content:"",enabled:true,shared:false};
 const formOf = (item: UserSkill): SkillInput => ({title:item.title,description:item.description,content:item.content,enabled:item.enabled,shared:item.shared});
@@ -89,6 +90,10 @@ export function SkillsPage() {
       <div className="space-y-5">
         <section aria-labelledby="skills-new" className="space-y-3">
         <h3 id="skills-new" className="font-medium">1) 新しいSkillの作成</h3>
+        <label className="block text-sm">営業分析テンプレート<select aria-label="営業分析テンプレート" disabled={busy||loading||generating} value="" className="mt-1 w-full rounded border bg-background p-2" onChange={event=>{
+          const profile=SALES_ANALYSIS_PROFILES.find(item=>item.key===event.target.value);
+          if(profile&&canLeave()){setSelected(null);setForm(salesAnalysisTemplate(profile.key));setEditorOpen(true);setError("");setNotice("テンプレートを読み込みました。対象と手順を確認して保存してください。");}
+        }}><option value="">テンプレートから作成</option>{SALES_ANALYSIS_PROFILES.map(profile=><option key={profile.key} value={profile.key}>{profile.title}</option>)}</select></label>
         <button type="button" disabled={busy||loading||generating} onClick={()=>choose(null)} className="w-full rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50">＋ 新しいSkill</button>
         <button type="button" disabled={busy||loading||generating} onClick={()=>{if(canLeave()){setGenerating(true);setError("");setNotice("");}}} className="w-full rounded border border-slate-400 dark:border-slate-500 px-3 py-2 disabled:opacity-50">AIと作成</button>
         </section>

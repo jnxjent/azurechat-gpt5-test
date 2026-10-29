@@ -15,6 +15,9 @@ import { formatAccountCandidates } from "./skill-account-candidates";
 import { resolveSkillSalesforceScope } from "./skill-salesforce-scope";
 import { SKILL_REPORT_OUTPUT_RULES, trackSkillReport, skillReportReasoningOptions } from "./skill-report-output";
 import { progressResultPages, progressRankingMarkdown, progressContextWithinBudget } from "./skill-progress-transport";
+import { planAnalysisSkill, type AnalysisRead } from "./skill-analysis-plan";
+import { analysisSummaryMarkdown, summarizeAnalysisRead } from "./skill-analysis-summary";
+import type { SkillSearchResult } from "./skill-search-policy";
 
 const sources: SearchSource[] = ["salesforce", "web", "documents"];
 const tools: ChatCompletionTool[] = sources.map(source => ({ type: "function", function: {
@@ -84,6 +87,41 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     const otherSourceOnly = /(?:Web|ウェブ|公開情報|社内資料)(?:検索|情報)?(?:だけ|のみ)/i.test(props.message) && !/Salesforce|セールスフォース/i.test(props.message);
     const ownerScoped = /私の|自分の|部下|所有|担当する|担当している/.test(props.message);
     const namedOwner = resolveSkillSalesforceScope(undefined, props.originalRequest ?? props.message).owner;
+    const analysisPlan=requestsSalesforce && !forbidsSalesforce && !otherSourceOnly ? planAnalysisSkill(props.skills,props.originalRequest??props.message,new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo"}).format(new Date())) : undefined;
+    let analysisHandled=false;
+    if (analysisPlan) {
+      if (analysisPlan.confirmation || !personal || process.env.SF_SKILL_READ_V2_ENABLED!=="true") {
+        cleanup();
+        return {runner:undefined,directContent:(analysisPlan.confirmation??"この分析には本人接続と型付きV2読み取りが必要です。共有接続で代用しません。")+"\n\n"+skillReferenceLabel(props.skills),citationResults:[...search.contextResults],salesforceSnapshot:search.salesforceSnapshot};
+      }
+      analysisHandled=true;hasProgressInput=true;
+      requirements.operations=Array.from(new Set(analysisPlan.reads.map(read=>read.operation)));
+      const results:Array<{read:AnalysisRead;result:SkillSearchResult}>=[];
+      for(const read of analysisPlan.reads) {
+        const result:SkillSearchResult = Date.now()>=searchDeadline||controller.signal.aborted
+          ? {source:"salesforce",status:"error",reason:"analysis_deadline",message:"時間上限のため未実行。0件ではありません。"}
+          : await search.execute("salesforce",read.operation==="accounts"?"取引先一覧":read.operation==="opportunities"?"商談一覧":"活動一覧",read.company,read.operation,read.scope,{progressPrefetch:true,analysisRequest:read.request});
+        if(result.status==="denied"||result.status==="needs_confirmation") {
+          cleanup();
+          const directContent=result.status==="needs_confirmation"&&Array.isArray(result.data)&&result.data.length
+            ? formatAccountCandidates(result,skillReferenceLabel(props.skills))
+            : (result.authoritativeText??result.message??"本人確認・権限または対象者の確認が必要です。")+"\n\n"+skillReferenceLabel(props.skills);
+          return {runner:undefined,directContent,citationResults:[...search.contextResults],salesforceSnapshot:search.salesforceSnapshot};
+        }
+        results.push({read,result});
+        coverage.push({operation:read.operation,status:result.status,reason:result.reason,count:result.modelVisibleCount,truncated:result.truncated});
+        const pages=progressResultPages(result);
+        pages.forEach((page,index)=>messages.push({role:"system",content:`本人権限の${analysisPlan.title}取得結果。対象=${read.owner??read.company}。同一検索の分割入力${index+1}/${pages.length}。全ページを合わせて分析し、各ページに反復された件数・集計値を足さない。\n`+JSON.stringify(page)}));
+        messages.push({role:"system",content:"分割前にコードで確定した、この検索の取得範囲内の集計。検索間・担当者間で条件を混ぜず、未取得と0件を区別する。\n"+JSON.stringify(summarizeAnalysisRead(result))});
+        if(!progressContextWithinBudget(messages))return capacityFailure();
+      }
+      progressRanking=analysisSummaryMarkdown(analysisPlan,results);
+      if(["progress","director","office","weekly","monthly"].includes(analysisPlan.key)) for(const {read,result} of results) {
+        const ranking=read.operation==="opportunities"?progressRankingMarkdown(result,Math.floor(20/Math.max(1,results.filter(item=>item.read.operation==="opportunities").length))):"";
+        if(ranking)progressRanking+="\n\n### "+(read.owner??"指定対象")+"の確認順\n\n"+ranking;
+      }
+      messages.push({role:"system",content:"分析範囲・不足の確定事項。未実行・取得失敗を0件に置換しない。担当者別の明細を全社・営業所全員の結果と呼ばない。担当者間の重複確認をしていないため、担当者を跨ぐ件数・金額を合算しない。将来日付の活動と未完了Taskを実施済み実績と呼ばない。\n"+JSON.stringify({profile:analysisPlan.key,period:analysisPlan.period,limitations:analysisPlan.limitations})});
+    }
     let confirmationPending = false;
     // A precisely bounded, unqualified owner progress request has three known
     // read purposes. Fetch them before planning; do not invent a reporting period.
@@ -91,7 +129,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     const plainRequest = (props.originalRequest ?? props.message).replace(/^Skill「[^」]+」を使って、\s*/, "").trim();
     const ownerProgress = namedOwner && plainRequest.startsWith(namedOwner)
       && /^(?:さん|氏)?の営業(?:進捗|状況)(?:の|を|レポート|に|まとめて|纏めて|出して|もらいたい|ください|教えて|見せて|報告して|確認して|[\s。？?!！])*$/.test(plainRequest.slice(namedOwner.length));
-    if (personal && process.env.SF_SKILL_READ_V2_ENABLED === "true" && ownerProgress && !requirements.fiscalPeriod && requestsSalesforce && !forbidsSalesforce && !otherSourceOnly && !props.selectedAccount) {
+    if (!analysisHandled && personal && process.env.SF_SKILL_READ_V2_ENABLED === "true" && ownerProgress && !requirements.fiscalPeriod && requestsSalesforce && !forbidsSalesforce && !otherSourceOnly && !props.selectedAccount) {
       const progressOperations = props.skills.some(skill => /営業進捗/.test(skill.title))
         ? ["accounts","opportunities","activities"]
         : requirements.operations.filter(op => ["accounts","opportunities","activities"].includes(op));
@@ -134,7 +172,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     }
     // A single verified discovery result is sufficient to continue without another user turn.
     // Account choices from stored history are always fetched again in personal mode.
-    if (props.selectedAccount && personal) {
+    if (!analysisHandled && props.selectedAccount && personal) {
       const current = await search.execute("salesforce", "取引先基本情報", undefined, "accounts");
       if (current.status !== "ok") {
         cleanup();
@@ -142,7 +180,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
       }
       messages.push({role:"system",content:"選択した取引先を本人権限で再取得した結果:\n"+JSON.stringify(current)});
     }
-    if (selectedAccount && !confirmationPending) {
+    if (!analysisHandled && selectedAccount && !confirmationPending) {
       for (const operation of requirements.operations) {
         if (Date.now() >= searchDeadline || controller.signal.aborted) break;
         // Let the model preserve stage and other task-specific conditions in its
@@ -163,6 +201,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
       }
     }
     for (let round = 0; round < SKILL_SEARCH_LIMITS.rounds; round++) {
+      if (analysisHandled) break;
       if (hasProgressInput && !progressContextWithinBudget(messages)) return capacityFailure();
       if (confirmationPending || Date.now() >= searchDeadline) break;
       // Teams has no prior Web history. Require a real lookup before the model
@@ -199,7 +238,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     const queryCount = coverage.reduce((sum, item) => sum + (item.queryCount ?? 0), 0);
     messages.push({ role: "system", content: "検索フェーズは終了しました。取得結果と不足を基に最終回答してください。追加確認が必要なら質問してください。回答末尾: " + skillReferenceLabel(props.skills) + "\n要求と実行結果の対応: " + JSON.stringify(coverage) + (requirements.queryBudget && queryCount > requirements.queryBudget ? "\nSkill指定のクエリ回数上限には未対応です。安全な固定検索と集計のため今回は少なくとも" + queryCount + "回のSalesforceクエリを使用しました。この制限を末尾に明示し完全準拠とは説明しないこと。" : "") + "\n実行記録: " + JSON.stringify(search.trace) + "\n" + selectedRecordContext });
     clearTimeout(timer);
-    if (progressRanking) messages.push({role:"system", content:"最優先3件・進行中商談一覧・優先フォローアップはサーバーが同じ確定順位から回答先頭へ自動挿入する。あなたはこれらの節・順位付き一覧・優先案件の列挙を生成しない。総括、成約・失注、活動、データ不足と参照情報を記述する。取引先別明細もサーバー表と重複させない。"});
+    if (progressRanking) messages.push({role:"system", content:"取得範囲・集計・最優先3件・進行中商談一覧・優先フォローアップはサーバーが同じ確定値から回答先頭へ自動挿入する。あなたはこれらの節・順位付き一覧・優先案件の列挙を重複生成しない。指定Skillに応じた総括、成約失注の要因、活動、議題、行動提案、データ不足と参照情報を記述する。未取得の比較・予算・所属を推測しない。"});
     if (hasProgressInput && !progressContextWithinBudget(messages)) return capacityFailure();
     timer=setTimeout(abort,SKILL_SEARCH_LIMITS.reportMilliseconds);
     const runner = client.beta.chat.completions.stream({ model, messages, max_completion_tokens: 12000,
