@@ -2,7 +2,7 @@ export const SKILL_SEARCH_LIMITS = { calls: 8, rounds: 6, searchMilliseconds: 90
 
 export type SearchSource = "salesforce" | "web" | "documents";
 export type SearchStatus = "ok" | "empty" | "denied" | "unavailable" | "error" | "limit" | "needs_confirmation";
-export type SkillSearchResult = { source: SearchSource; status: SearchStatus; message?: string; data?: unknown; truncated?: boolean; reason?: string; httpStatus?: number; excludedCount?: number; queryCount?: number; authoritativeText?: string; returnedObject?: string; requestedTarget?: string; planVersion?: string; fetchedCount?:number; totalCount?:number|null; modelVisibleCount?:number; appliedFilters?:unknown };
+export type SkillSearchResult = { source: SearchSource; status: SearchStatus; message?: string; data?: unknown; truncated?: boolean; reason?: string; httpStatus?: number; excludedCount?: number; queryCount?: number; authoritativeText?: string; returnedObject?: string; requestedTarget?: string; planVersion?: string; fetchedCount?:number; totalCount?:number|null; modelVisibleCount?:number; appliedFilters?:unknown; progressSummary?: { scope: "fetched_records"; recordCount: number; complete: boolean; stageCounts: Record<string, number>; omittedFields: string[] }; activitySummary?: { scope: "fetched_records"; recordCount: number; complete: boolean; completedTasks: number; openTasks: number; unverifiedTasks: number; overdueOpenTasks: number; events: number; unknownRecords: number } };
 
 export function shouldRunSkillSearch(selectedCount: number): boolean {
   return process.env.SKILL_SEARCH_ENABLED === "true" && selectedCount > 0;

@@ -14,19 +14,25 @@ export function progressEvidence(result: SkillSearchResult, today: string): Skil
   const rows = result.data.map((value: unknown) => {
     if (!value || typeof value !== "object") return value;
     const row = value as Record<string, unknown>;
-    const task = result.returnedObject === "Activity" && String(row.Id ?? "").startsWith("00T");
-    // No business-specific Status mapping is assumed. Completion must be checked
-    // against the organization's actual Task statuses before calling it pending.
+    const task = ["Activity", "Task"].includes(result.returnedObject ?? "") && String(row.Id ?? "").startsWith("00T") && (row.object === undefined || row.object === "Task");
     const open = result.returnedObject === "Opportunity" && ["見積依頼", "見積提示", "契約締結", "作業段取り"].includes(String(row.StageName));
     if (!open && !task) return { ...row };
     const due = day(task ? row.ActivityDate : row.CloseDate), last = day(row.LastActivityDate);
+    if (task) {
+      const taskCompletion = row.IsClosed === true ? "completed" : row.IsClosed === false ? "open" : "unverified";
+      return { ...row, progressEvidence: {
+        asOf: today, taskCompletion, dueDateMissing: row.ActivityDate == null || row.ActivityDate === "",
+        // A past due date alone does not establish an outstanding obligation.
+        overdueDays: taskCompletion === "open" && due !== undefined ? Math.max(0, now - due) : null,
+        instruction: taskCompletion === "unverified" ? "Taskの完了状態は未確認。Statusの名称から未完了と推測せず、未完了件数に含めない。" : "Task.IsClosedで完了判定。完了済みTaskは期限超過の未完了件数に含めない。",
+      } };
+    }
     return { ...row, progressEvidence: {
       asOf: today,
       lastActivityMissing: row.LastActivityDate == null || row.LastActivityDate === "",
       closeDateMissing: row.CloseDate == null || row.CloseDate === "",
       overdueDays: due === undefined ? null : Math.max(0, now - due),
       daysSinceLastActivity: last === undefined ? null : Math.max(0, now - last),
-      ...(task ? { taskCompletion: "unverified", instruction: "Taskの状態原文を表示する。完了状態の業務定義未確認のため未完了件数には集計しない。" } : {}),
     } };
   });
   // Rank only known open opportunities; closed/unknown records retain their order.
@@ -48,4 +54,55 @@ export function progressEvidence(result: SkillSearchResult, today: string): Skil
     return (typeof b.Amount === "number" ? b.Amount : -1) - (typeof a.Amount === "number" ? a.Amount : -1);
   });
   return { ...result, data: rows };
+}
+
+// Use a bounded analytical projection only for the server's progress prefetch.
+// Snapshot/proof storage keeps the original records; free-text descriptions are
+// omitted explicitly instead of silently losing entire opportunities.
+export function progressReportEvidence(result: SkillSearchResult, today: string): SkillSearchResult {
+  const ranked = progressEvidence(result, today);
+  if (ranked.source === "salesforce" && ["ok", "empty"].includes(ranked.status) && ["Activity", "Task", "Event"].includes(ranked.returnedObject ?? "") && Array.isArray(ranked.data)) {
+    const summary = { scope: "fetched_records" as const, recordCount: ranked.data.length,
+      complete: !ranked.truncated && !ranked.excludedCount && ranked.totalCount === ranked.data.length,
+      completedTasks: 0, openTasks: 0, unverifiedTasks: 0, overdueOpenTasks: 0, events: 0, unknownRecords: 0 };
+    for (const row of ranked.data) {
+      if (row && typeof row === "object" && String(row.Id ?? "").startsWith("00U") && (row.object === undefined || row.object === "Event")) summary.events++;
+      else if (row?.progressEvidence?.taskCompletion === "completed") summary.completedTasks++;
+      else if (row?.progressEvidence?.taskCompletion === "open") {
+        summary.openTasks++;
+        if (row.progressEvidence.overdueDays > 0) summary.overdueOpenTasks++;
+      } else if (row && typeof row === "object" && String(row.Id ?? "").startsWith("00T") && (row.object === undefined || row.object === "Task")) summary.unverifiedTasks++;
+      else summary.unknownRecords++;
+    }
+    return { ...ranked, activitySummary: summary };
+  }
+  if (ranked.source !== "salesforce" || !["ok", "empty"].includes(ranked.status) || ranked.returnedObject !== "Opportunity" || !Array.isArray(ranked.data)) return ranked;
+  const fields = new Set(["Id", "Name", "AccountId", "AccountName", "Account", "OwnerId", "OwnerName", "Owner", "StageName", "Amount", "CloseDate", "LastActivityDate", "IsClosed", "IsWon", "Probability", "Loss_Reason__c", "NextStep", "lightning_url", "progressEvidence"]);
+  const omitted = new Set<string>();
+  const stageCounts: Record<string, number> = Object.create(null);
+  let rank = 0;
+  const data = ranked.data.map((value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const row = value as Record<string, unknown>;
+    const stage = typeof row.StageName === "string" ? row.StageName : "未取得";
+    stageCounts[stage] = (stageCounts[stage] ?? 0) + 1;
+    const projected: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(row)) {
+      if (!fields.has(key)) { omitted.add(key); continue; }
+      // Related records may contain long descriptions as well.
+      if ((key === "Account" || key === "Owner") && item && typeof item === "object") {
+        projected[key] = Object.fromEntries(Object.entries(item).filter(([field]) => {
+          if (field === "Id" || field === "Name") return true;
+          omitted.add(key + "." + field); return false;
+        }));
+      } else projected[key] = item;
+    }
+    if (row.progressEvidence) projected.progressRank = ++rank;
+    return projected;
+  });
+  return { ...ranked, data, progressSummary: {
+    scope: "fetched_records", recordCount: data.length,
+    complete: !ranked.truncated && !ranked.excludedCount && ranked.totalCount === data.length,
+    stageCounts, omittedFields: Array.from(omitted).sort(),
+  } };
 }

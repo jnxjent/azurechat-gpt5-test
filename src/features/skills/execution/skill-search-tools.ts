@@ -18,7 +18,7 @@ import type { SelectedSearchAccount } from "./skill-search-continuation";
 import { readFiscalPeriod, type FiscalPeriod } from "./skill-search-requirements";
 import { resolveSkillSalesforceScope, buildSkillSalesforceQuery, SkillQueryContextError } from "./skill-salesforce-scope";
 import { skillGatewayThread } from "@/features/common/services/salesforce-proof-thread";
-import { progressEvidence } from "./skill-progress-evidence";
+import { progressReportEvidence } from "./skill-progress-evidence";
 
 function skillRecoverableReadError(source: SearchSource, body: any, httpStatus: number): SkillSearchResult | undefined {
   // Candidate/identity/permission decisions remain authoritative. Never let a
@@ -86,7 +86,7 @@ export function createSkillSearchTools(props: { email: string; threadId: string;
       result = error instanceof SkillQueryContextError ? { source, status: "error", reason: error.reason, message: error.message } : { source, status: "error", reason: props.signal.aborted ? "cancelled" : error instanceof TypeError ? "invalid_input_or_connection" : error instanceof Error && error.message === "timeout" ? "timeout" : "connection_failed", message: "検索を完了できませんでした。接続失敗・タイムアウト等のため、データの有無は判断できません。" };
       }
     }
-    result = boundSearchResult(presentation?.progressPrefetch ? progressEvidence(result, new Intl.DateTimeFormat("sv-SE", {timeZone:"Asia/Tokyo"}).format(new Date())) : result);
+    result = boundSearchResult(presentation?.progressPrefetch ? progressReportEvidence(result, new Intl.DateTimeFormat("sv-SE", {timeZone:"Asia/Tokyo"}).format(new Date())) : result);
     if (source === "documents" && Array.isArray(result.data)) {
       const markup = formatCitationMarkup(result.data);
       if (markup) citationResults.push(markup);

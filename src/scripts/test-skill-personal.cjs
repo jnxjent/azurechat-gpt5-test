@@ -359,6 +359,23 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   assert.equal(ordered.status,'ok');
   assert.deepEqual(ordered.data.map(row=>row.Id),amountOrder.map(row=>row.Id),'Ordinary search preserves Gateway ordering');
   assert.ok(ordered.data.every(row=>!row.progressEvidence),'Ordinary search does not receive progress annotations');
+  issueQueue=[{status:200,body:{ok:true,object:'Opportunity',plan_version:'SF_READ_PLAN_V2',items:Array.from({length:28},(_,i)=>({
+    Id:'006'+String(i).padStart(12,'0')+'AAA',Name:'商談'+i,Amount:i,StageName:'見積提示',CloseDate:'2020-01-01',LastActivityDate:null,Description:'説明'.repeat(500),
+  })),total_count:28,snapshot_proof:'proof-progress'}}];
+  const fullProgress=await createSkillSearchTools({...props,userMessage:'黄さんの営業進捗'}).execute('salesforce','商談一覧',undefined,'opportunities',{owner:'黄',target:'opportunities',unsupportedConditions:[]},{progressPrefetch:true});
+  assert.equal(fullProgress.data.length,28,'Real search-tool pipeline projects before applying byte limits');
+  assert.equal(fullProgress.progressSummary.recordCount,28);
+  assert.equal(fullProgress.data[0].progressRank,1);
+  issueQueue=[{status:200,body:{ok:true,object:'Activity',plan_version:'SF_READ_PLAN_V2',items:[
+    {Id:'00T000000000001AAA',object:'Task',IsClosed:false,ActivityDate:'2020-01-01'},
+    {Id:'00T000000000002AAA',object:'Task',IsClosed:true,ActivityDate:'2020-01-01'},
+    {Id:'00U000000000001AAA',object:'Event',ActivityDate:'2020-01-01'},
+  ],total_count:3,snapshot_proof:'proof-task'}}];
+  const taskProgress=await createSkillSearchTools({...props,userMessage:'黄さんの営業進捗'}).execute('salesforce','活動一覧',undefined,'activities',{owner:'黄',target:'activities',unsupportedConditions:[]},{progressPrefetch:true});
+  assert.equal(taskProgress.activitySummary.openTasks,1);
+  assert.equal(taskProgress.activitySummary.completedTasks,1);
+  assert.equal(taskProgress.activitySummary.overdueOpenTasks,1);
+  assert.equal(taskProgress.activitySummary.events,1);
   delete process.env.SF_SKILL_READ_V2_ENABLED;
   console.log('PASS personal Skill signing, exact principal/thread/body, no shared fallback, proof lineage and current-access recheck');
 })().catch(error=>{console.error(error);process.exitCode=1;});

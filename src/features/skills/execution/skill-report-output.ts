@@ -10,6 +10,8 @@ export function skillReportReasoningOptions() {
   return {reasoning_effort:effort as "low"|"medium"|"high"};
 }
 export const SKILL_REPORT_OUTPUT_RULES = [
+  "activitySummaryは容量制限前の取得明細内でコードが計算した活動内訳。completedTasks/openTasksはTask.IsClosedの真偽値だけで判定し、未確認はunverifiedTasks、Eventはeventsに分離する。overdueOpenTasksは期限を過ぎた未完了Taskだけ。完了済みTaskとEventを未完了・期限超過件数に加えない。complete=falseなら全体の未完了件数と呼ばない。",
+  "progressRankはサーバーが確定した取得範囲内の確認順位。結論・一覧・次の行動で同じ番号を使い、AIが振り直さない。progressSummaryの段階別件数は容量制限前にコードで計算した取得明細内の値。complete=trueの場合だけ対象検索の全件として扱える。omittedFieldsの項目はAI入力から省略済みなので未取得と混同せず、その内容を推測しない。",
   "進捗の並び順では日付未入力の確認を最優先する。lastActivityMissing/closeDateMissingがtrueなら『入力漏れの可能性』に掲載し、活動していない・期限超過とは断定しない。以降は返却順を守る。未入力に架空の経過日数を付けない。",
   "営業進捗では冒頭に取得範囲内の最優先3件と理由・次の行動を示す。progressEvidenceがある商談は返却順（予定日超過の有無、超過日数、活動経過日数、金額の順）を維持し、結論・一覧・フォローアップで順位を一致させる。これは取得範囲内の確認順であり、全商談の順位ではない。日数はprogressEvidenceの値を使い、予定日当日は超過と呼ばない。停滞の業務基準は未確定なので日数から停滞と断定しない。ToDoはTaskとEventを区別し、Taskの状態が未確認なら未完了と断定しない。未取得の原価回答・見積について作文しない。",
   "fetchedCountはGatewayから取得した明細数、modelVisibleCountは容量制限後にAIが確認できる明細数。両者が違うときは『取得後、AIへ渡す際に一部省略』と説明し、Salesforceから取得できなかったと書かない。成約・失注の別検索があればその結果を使用し、全段階明細だけで判定しない。期間未指定の成約・失注結果は全期間と明示し、期間がないことだけを理由に取得済み案件を未取得と書かない。参照元は実際のリンクを掲載し、存在しないリンクを表内に記載したと説明しない。",
