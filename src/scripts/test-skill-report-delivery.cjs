@@ -73,5 +73,14 @@ function props(conversation,send){return {actor:{email:'owner@example.test',sale
  const stream=OpenAIStream({runner:web,chatThread:{id:'fixture-chat'},finalizeContent:content=>finalizeSkillReport(web,content)});
  const reading=new Response(stream).text();web.emit('finalChatCompletion',{choices:[{finish_reason:'length'}]});web.emit('finalContent','途中');
  const sse=await reading;assert.ok(sse.includes(SKILL_OUTPUT_LIMIT_NOTE));assert.ok(saved.some(v=>v.role==='assistant'&&v.content.includes(SKILL_OUTPUT_LIMIT_NOTE)),'Web persists exactly the truncation notice it displays');
+ const ranked=new EventEmitter();const prefix='## 営業進捗の確認順\n\n1. サーバー確定案件';
+ trackSkillReport(ranked,'参照したSkill: fixture v1','web',prefix);
+ const rankedStream=OpenAIStream({runner:ranked,chatThread:{id:'ranked-chat'},finalizeContent:content=>finalizeSkillReport(ranked,content)});
+ const rankedReading=new Response(rankedStream).text();ranked.emit('finalContent','活動の説明');
+ const rankedSse=await rankedReading;assert.ok(rankedSse.includes('サーバー確定案件'));
+ assert.ok(saved.some(v=>v.content.startsWith(prefix)),'Web saves authoritative ranking in its final content');
+ assert.equal(finalizeSkillReport(ranked,finalizeSkillReport(ranked,'活動の説明')).split(prefix).length,2,'Prefix is idempotent');
+ const teamsRanked=new EventEmitter();trackSkillReport(teamsRanked,'参照したSkill: fixture v1','teams',prefix);
+ assert.equal(finalizeSkillReport(teamsRanked,'活動の説明'),finalizeSkillReport(ranked,'活動の説明'),'Web and Teams receive the same canonical prefix');
  console.log('PASS early ACK, durable dedup, no replay, failure/partial delivery, bounded Markdown, output finish reason and Web persistence');
 })().catch(error=>{console.error(error);process.exitCode=1;});

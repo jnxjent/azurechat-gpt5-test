@@ -6,7 +6,7 @@ const {createHash} = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const principal = '11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';
 const actor = {email:'owner@example.test',salesforcePrincipal:principal};
-let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[], planned=[], catalog=[], issueQueue=[];
+let currentActor = actor, allowed = true, fetches = [], mode='ok', planning=[], planned=[], catalog=[], issueQueue=[], finalInputs=[];
 const stubs = {
   'server-only':{},
   '@/features/canvas/canvas-actor':{getCanvasActor:async()=>currentActor,withCanvasActor:(_actor,fn)=>fn()},
@@ -21,7 +21,7 @@ const stubs = {
   '@/features/teams/teams-brave-search-service':{isTeamsBraveSearchConfigured:()=>false},
   '@/features/common/services/openai': {OpenAIInstance: () => ({
     chat: {completions: {create: async p => {planning.push(p); return {choices:[{message:planned.shift() ?? {role:'assistant',content:'ready'}}]};}}},
-    beta: {chat: {completions: {stream: () => {const e = new EventEmitter(); e.finalChatCompletion=async()=>({choices:[{message:{content:'取得できた営業進捗。期間が必要な分析は未取得。'}}]});setImmediate(()=>e.emit('end'));return e;}}}},
+    beta: {chat: {completions: {stream: p => {finalInputs.push(structuredClone(p));const e = new EventEmitter(); e.finalChatCompletion=async()=>({choices:[{message:{content:'取得できた営業進捗。期間が必要な分析は未取得。'}}]});setImmediate(()=>e.emit('end'));return e;}}}},
   })},
 };
 const cache = new Map();
@@ -376,6 +376,33 @@ const props={email:actor.email,threadId:'owned-thread',userMessage:'Exampleを�
   assert.equal(taskProgress.activitySummary.completedTasks,1);
   assert.equal(taskProgress.activitySummary.overdueOpenTasks,1);
   assert.equal(taskProgress.activitySummary.events,1);
+  for(const channel of ['web','teams']) {
+    const detailed=Array.from({length:28},(_,i)=>({...amountOrder[0],Id:'006'+String(i).padStart(12,'0')+'AAA',Name:'【長い正式案件名】産業廃棄物収集運搬・年間契約更新 '+i,AccountName:'株式会社サンプル環境 営業所工場 '+i,lightning_url:'https://example--fullsand.sandbox.lightning.force.com/lightning/r/Opportunity/006'+String(i).padStart(12,'0')+'AAA/view'}));
+    issueQueue=['Account','Opportunity','Opportunity','Opportunity','Activity'].map((object,i)=>({status:200,body:{ok:true,object,items:i===1?detailed:[],total_count:i===1?28:0,applied_filters:{stage:i===1?'open':i===2?'won':i===3?'lost':'all'},snapshot_proof:'proof-'+i}}));
+    planned=[];
+    const executed=await runSkillSearch({...runnerProps,skills:[{...runnerProps.skills[0],title:'営業進捗管理',content:'Salesforce Account Opportunity Activity'}],chatThread:{id:channel+'-all-progress'},message:reportRequest,originalRequest:reportRequest,history:[],selectedAccount:undefined,selectedAccountRecord:undefined});
+    const input=finalInputs.at(-1);
+    const pages=input.messages.flatMap(message=>{try{const parsed=JSON.parse(String(message.content).split('\n').at(-1));return parsed.source==='salesforce'&&parsed.returnedObject==='Opportunity'&&parsed.appliedFilters?.stage==='open'?[parsed]:[];}catch{return [];}});
+    assert.ok(pages.length>1,'Actual final-model input has multiple complete pages');
+    assert.deepEqual(pages.flatMap(page=>page.data.map(row=>row.Id)),detailed.map(row=>row.Id));
+    assert.ok(pages.every(page=>page.modelVisibleCount===28));
+    const {finalizeSkillReport}=load('features/skills/execution/skill-report-output.ts');
+    const final=finalizeSkillReport(executed.runner,'活動と成約の説明');
+    assert.ok(final.startsWith('## 営業進捗の確認順'));
+    assert.ok(final.includes('取得28件、AI入力28件'));
+    assert.ok(final.includes('20件掲載／分析対象28件'));
+  }
+  const largeRows=Array.from({length:80},(_,i)=>({...amountOrder[0],Id:'006'+String(i).padStart(12,'0')+'AAA',Name:'長い案件'.repeat(45),AccountName:'取引先'.repeat(10),lightning_url:'https://sf.example.test/'+String(i).padStart(200,'x')}));
+  const {boundProgressResult}=load('features/skills/execution/skill-progress-transport.ts');
+  const {progressReportEvidence}=load('features/skills/execution/skill-progress-evidence.ts');
+  assert.equal(boundProgressResult(progressReportEvidence({source:'salesforce',status:'ok',returnedObject:'Opportunity',data:largeRows,totalCount:100},'2026-10-29')).status,'ok','Each individual read fits its context budget');
+  issueQueue=['Account','Opportunity','Opportunity','Opportunity','Activity'].map((object,i)=>({status:200,body:{ok:true,object,items:largeRows.map(row=>i===0?{...row,Id:row.Id.replace(/^006/,'001')}:row),total_count:80,snapshot_proof:'large-proof-'+i}}));
+  const beforeCapacityFinal=finalInputs.length,beforeCapacityPlan=planning.length;
+  const stopped=await runSkillSearch({...runnerProps,skills:[{...runnerProps.skills[0],title:'営業進捗管理',content:'Salesforce Account Opportunity Activity'}],message:reportRequest,originalRequest:reportRequest,history:[],selectedAccount:undefined,selectedAccountRecord:undefined});
+  assert.equal(stopped.runner,undefined);assert.ok(stopped.directContent.includes('レポート全体の容量上限'));
+  assert.equal(finalInputs.length,beforeCapacityFinal,'No final model call after whole-report budget overflow');
+  assert.equal(planning.length,beforeCapacityPlan,'No planning model call with oversized prefetch');
+  issueQueue=[];
   delete process.env.SF_SKILL_READ_V2_ENABLED;
   console.log('PASS personal Skill signing, exact principal/thread/body, no shared fallback, proof lineage and current-access recheck');
 })().catch(error=>{console.error(error);process.exitCode=1;});

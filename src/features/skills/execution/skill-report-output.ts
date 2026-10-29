@@ -1,6 +1,6 @@
 import type { ChatCompletionStreamingRunner } from "openai/resources/beta/chat/completions";
 
-const reports = new WeakMap<object, { reason?: string; reference: string }>();
+const reports = new WeakMap<object, { reason?: string; reference: string; prefix: string }>();
 export const SKILL_OUTPUT_LIMIT_NOTE = "※出力上限に達したため、レポートの一部を省略しました。未掲載の情報を0件とは扱っていません。";
 export const SKILL_CONTENT_FILTER_NOTE = "※生成内容の制限により、回答の一部を表示できませんでした。";
 export function skillReportReasoningOptions() {
@@ -10,6 +10,7 @@ export function skillReportReasoningOptions() {
   return {reasoning_effort:effort as "low"|"medium"|"high"};
 }
 export const SKILL_REPORT_OUTPUT_RULES = [
+  "amountSummaryは分割前にコードが計算した取得明細のAmount値の合計。valueSumをそのまま使用し、各ページの同じ集計値を足さない。欠損は0円ではない。通貨・税区分は未確認なので売上・予算・円換算として扱わない。上流取得が一部なら対象検索全体の合計とは呼ばない。",
   "activitySummaryは容量制限前の取得明細内でコードが計算した活動内訳。completedTasks/openTasksはTask.IsClosedの真偽値だけで判定し、未確認はunverifiedTasks、Eventはeventsに分離する。overdueOpenTasksは期限を過ぎた未完了Taskだけ。完了済みTaskとEventを未完了・期限超過件数に加えない。complete=falseなら全体の未完了件数と呼ばない。",
   "progressRankはサーバーが確定した取得範囲内の確認順位。結論・一覧・次の行動で同じ番号を使い、AIが振り直さない。progressSummaryの段階別件数は容量制限前にコードで計算した取得明細内の値。complete=trueの場合だけ対象検索の全件として扱える。omittedFieldsの項目はAI入力から省略済みなので未取得と混同せず、その内容を推測しない。",
   "進捗の並び順では日付未入力の確認を最優先する。lastActivityMissing/closeDateMissingがtrueなら『入力漏れの可能性』に掲載し、活動していない・期限超過とは断定しない。以降は返却順を守る。未入力に架空の経過日数を付けない。",
@@ -21,8 +22,8 @@ export const SKILL_REPORT_OUTPUT_RULES = [
   "『最近』の既定期間とテスト・ダミーの除外条件を勝手に設定しない。全期間の件数を最近の件数と呼ばない。表示上限に収まるよう重複説明と長い表を減らし、成約・失注、活動、フォローアップ、データ不足と参照表示を最後まで含める。",
 ].join("\n");
 
-export function trackSkillReport(runner: ChatCompletionStreamingRunner, reference: string, channel: string) {
-  const state = { reference, reason: undefined as string | undefined };
+export function trackSkillReport(runner: ChatCompletionStreamingRunner, reference: string, channel: string, prefix = "") {
+  const state = { reference, prefix, reason: undefined as string | undefined };
   reports.set(runner, state);
   // SDK emits finalChatCompletion before finalContent; Web persistence and Teams
   // therefore use the same completion status without making a second model call.
@@ -37,6 +38,7 @@ export function finalizeSkillReport(runner: object, content: string, completion?
   const state = reports.get(runner);
   if (!state) return content;
   let text = content.trimEnd();
+  if (state.prefix && !text.startsWith(state.prefix)) text = state.prefix + "\n\n" + text;
   const reason=completion ? completion.choices[0]?.finish_reason : state.reason;
   if (reason === "length" && !text.includes(SKILL_OUTPUT_LIMIT_NOTE)) text += "\n\n" + SKILL_OUTPUT_LIMIT_NOTE;
   if (reason === "content_filter" && !text.includes(SKILL_CONTENT_FILTER_NOTE)) text += "\n\n" + SKILL_CONTENT_FILTER_NOTE;

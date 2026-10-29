@@ -14,6 +14,7 @@ import { buildAccountCandidateQuery, companyForLookup, sameSalesforceId } from "
 import { formatAccountCandidates } from "./skill-account-candidates";
 import { resolveSkillSalesforceScope } from "./skill-salesforce-scope";
 import { SKILL_REPORT_OUTPUT_RULES, trackSkillReport, skillReportReasoningOptions } from "./skill-report-output";
+import { progressResultPages, progressRankingMarkdown, progressContextWithinBudget } from "./skill-progress-transport";
 
 const sources: SearchSource[] = ["salesforce", "web", "documents"];
 const tools: ChatCompletionTool[] = sources.map(source => ({ type: "function", function: {
@@ -44,6 +45,12 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
   const latestPeriod = readFiscalPeriod(props.message);
   if (latestPeriod) requirements.fiscalPeriod = latestPeriod;
   const coverage: Array<{ operation: string; status: string; reason?: string; count?: number; truncated?: boolean; queryCount?: number }> = [];
+  let progressRanking = "";
+  let hasProgressInput = false;
+  const capacityFailure = () => {
+    cleanup();
+    return { runner: undefined, directContent: "取得結果を合わせたAI入力がレポート全体の容量上限を超えたため、分析を中止しました。明細を黙って削って全件分析したとは扱いません。対象・期間を絞って再実行してください。\n\n" + skillReferenceLabel(props.skills), citationResults: [...search.contextResults], salesforceSnapshot: search.salesforceSnapshot };
+  };
   const search = createSkillSearchTools({ email: props.email, threadId: props.chatThread.id, signal: controller.signal, userMessage: props.originalRequest ?? props.message, selectedAccount: props.selectedAccount, selectedAccountRecord: props.selectedAccountRecord, fiscalPeriod: requirements.fiscalPeriod, documentSearch: props.documentSearch });
   if (props.skills.length === 1) search.contextResults.push(JSON.stringify({ integration: "skill_search_selection", observedAt: new Date().toISOString(), skillName: props.skills[0].title, skillId: props.skills[0].id, skillVersion: props.skills[0].version, originalRequest: props.originalRequest ?? props.message }));
   let selectedAccount = props.selectedAccount;
@@ -96,7 +103,11 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
         const query = ({accounts:"取引先一覧",opportunities:"商談一覧",activities:"活動一覧"} as Record<string,string>)[operation];
         const result = await search.execute("salesforce",query,undefined,operation,{owner:namedOwner,target:operation,stage,unsupportedConditions:[]},{progressPrefetch:true});
         coverage.push({operation,status:result.status,reason:result.reason,count:Array.isArray(result.data)?result.data.length:undefined,truncated:result.truncated});
-        messages.push({role:"system",content:"サーバーが本人権限で実行した担当者別の現況検索結果。取得済み対象の無条件再検索を繰り返さず、期間指定がなければ全期間の現況と説明する。進行中・成約・失注は別検索。合算は同一範囲の全検索成功時のみ。分類外の段階があり得るため合計を全商談件数とは呼ばない。段階="+(stage ?? "該当なし")+"\n"+JSON.stringify(result)});
+        const pages = progressResultPages(result);
+        hasProgressInput = true;
+        pages.forEach((page, index) => messages.push({role:"system",content:"サーバーが本人権限で実行した担当者別の現況検索結果。同じ検索の分割入力 " +(index+1)+"/"+pages.length+"。modelVisibleCountは全ページ合計の明細数であり、ページごとの件数・総件数・集計を足し合わせない。全ページを合わせて分析する。取得済み対象の無条件再検索を繰り返さず、期間指定がなければ全期間の現況と説明する。進行中・成約・失注は別検索。分類外の段階があり得るため3分類の合計を全商談件数とは呼ばない。段階="+(stage ?? "該当なし")+"\n"+JSON.stringify(page)}));
+        if (stage === "進行中") progressRanking = progressRankingMarkdown(result);
+        if (!progressContextWithinBudget(messages)) return capacityFailure();
         if (result.status === "needs_confirmation" || result.status === "denied") {
           cleanup();
           return {runner:undefined,directContent:(result.authoritativeText ?? result.message ?? "本人確認または候補の確認が必要です。")+"\n\n"+skillReferenceLabel(props.skills),citationResults:[...search.contextResults],salesforceSnapshot:search.salesforceSnapshot};
@@ -152,6 +163,7 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
       }
     }
     for (let round = 0; round < SKILL_SEARCH_LIMITS.rounds; round++) {
+      if (hasProgressInput && !progressContextWithinBudget(messages)) return capacityFailure();
       if (confirmationPending || Date.now() >= searchDeadline) break;
       // Teams has no prior Web history. Require a real lookup before the model
       // declares that an explicitly named employee cannot be identified.
@@ -187,11 +199,13 @@ export async function runSkillSearch(props: { chatThread: Pick<ChatThreadModel, 
     const queryCount = coverage.reduce((sum, item) => sum + (item.queryCount ?? 0), 0);
     messages.push({ role: "system", content: "検索フェーズは終了しました。取得結果と不足を基に最終回答してください。追加確認が必要なら質問してください。回答末尾: " + skillReferenceLabel(props.skills) + "\n要求と実行結果の対応: " + JSON.stringify(coverage) + (requirements.queryBudget && queryCount > requirements.queryBudget ? "\nSkill指定のクエリ回数上限には未対応です。安全な固定検索と集計のため今回は少なくとも" + queryCount + "回のSalesforceクエリを使用しました。この制限を末尾に明示し完全準拠とは説明しないこと。" : "") + "\n実行記録: " + JSON.stringify(search.trace) + "\n" + selectedRecordContext });
     clearTimeout(timer);
+    if (progressRanking) messages.push({role:"system", content:"最優先3件・進行中商談一覧・優先フォローアップはサーバーが同じ確定順位から回答先頭へ自動挿入する。あなたはこれらの節・順位付き一覧・優先案件の列挙を生成しない。総括、成約・失注、活動、データ不足と参照情報を記述する。取引先別明細もサーバー表と重複させない。"});
+    if (hasProgressInput && !progressContextWithinBudget(messages)) return capacityFailure();
     timer=setTimeout(abort,SKILL_SEARCH_LIMITS.reportMilliseconds);
     const runner = client.beta.chat.completions.stream({ model, messages, max_completion_tokens: 12000,
       ...skillReportReasoningOptions(),
     }, { signal: controller.signal });
-    trackSkillReport(runner, skillReferenceLabel(props.skills), props.chatThread.id.startsWith("teams-") ? "teams" : "web");
+    trackSkillReport(runner, skillReferenceLabel(props.skills), props.chatThread.id.startsWith("teams-") ? "teams" : "web", progressRanking);
     runner.on("end", cleanup);
     runner.on("error", cleanup);
     runner.on("abort", cleanup);

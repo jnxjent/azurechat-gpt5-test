@@ -1,4 +1,5 @@
 import type { SkillSearchResult } from "./skill-search-policy";
+import { progressAmountSummary } from "./skill-progress-amount";
 
 // Calendar days in JST, independent of the server's local time zone.
 function day(value: unknown): number | undefined {
@@ -100,7 +101,7 @@ export function progressReportEvidence(result: SkillSearchResult, today: string)
     if (row.progressEvidence) projected.progressRank = ++rank;
     return projected;
   });
-  return { ...ranked, data, progressSummary: {
+  return { ...ranked, data, amountSummary: progressAmountSummary(data as Record<string, unknown>[]), progressSummary: {
     scope: "fetched_records", recordCount: data.length,
     complete: !ranked.truncated && !ranked.excludedCount && ranked.totalCount === data.length,
     stageCounts, omittedFields: Array.from(omitted).sort(),

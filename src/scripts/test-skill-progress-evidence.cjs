@@ -1,6 +1,8 @@
 const fs=require('node:fs'),ts=require('typescript'),assert=require('node:assert/strict'),path=require('node:path');
 const m={exports:{}};
-new Function('module','exports',ts.transpileModule(fs.readFileSync(path.join(__dirname,'../features/skills/execution/skill-progress-evidence.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(m,m.exports);
+const amount={exports:{}};
+new Function('module','exports',ts.transpileModule(fs.readFileSync(path.join(__dirname,'../features/skills/execution/skill-progress-amount.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(amount,amount.exports);
+new Function('require','module','exports',ts.transpileModule(fs.readFileSync(path.join(__dirname,'../features/skills/execution/skill-progress-evidence.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(()=>amount.exports,m,m.exports);
 const {progressEvidence}=m.exports;
 const input={source:'salesforce',status:'ok',returnedObject:'Opportunity',totalCount:58,data:[
  {Id:'today',StageName:'作業段取り',CloseDate:'2026-10-28',LastActivityDate:'2026-10-27',Amount:99999},
@@ -98,3 +100,4 @@ const lost=progressReportEvidence({...opportunities,data:[{Id:'lost',StageName:'
 assert.equal(lost.data[0].Loss_Reason__c,'顧客都合');
 assert.equal(lost.data[0].progressRank,undefined,'Do not assign open-opportunity priorities to lost records');
 assert.equal(progressReportEvidence({...tasks,status:'error'},'2026-10-29').activitySummary,undefined,'Errors are not empty successful reads');
+require('./test-skill-progress-transport.cjs');
